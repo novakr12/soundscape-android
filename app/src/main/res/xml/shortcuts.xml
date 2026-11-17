@@ -13,11 +13,15 @@
     <shortcut
         android:enabled="true"
         android:icon="@mipmap/ic_launcher"
-        android:shortcutId="connect"
-        android:shortcutShortLabel="@string/shortcut_connect">
+        android:shortcutId="settings"
+        android:shortcutShortLabel="@string/shortcut_settings">
         <intent
-            android:action="io.github.novakr12.soundscape.CONNECT"
+            android:action="io.github.novakr12.soundscape.OPEN"
             android:targetClass="io.github.novakr12.soundscape.MainActivity"
-            android:targetPackage="io.github.novakr12.soundscape" />
+            android:targetPackage="io.github.novakr12.soundscape">
+            <extra
+                android:name="page"
+                android:value="/settings#this-app" />
+        </intent>
     </shortcut>
 </shortcuts>

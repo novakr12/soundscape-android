@@ -37,6 +37,9 @@ import androidx.core.view.updatePadding
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
     private lateinit var web: WebView
@@ -46,6 +49,8 @@ class MainActivity : AppCompatActivity() {
     private val main = Handler(Looper.getMainLooper())
     private var controller: ListenableFuture<MediaController>? = null
     private var visible = false
+    private var settingsShown: Pair<String, String>? = null
+    private val worker = Executors.newSingleThreadExecutor()
     private val tick = object : Runnable {
         override fun run() {
             followPage()
@@ -137,6 +142,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun followPage() {
         if (!::web.isInitialized) return
+        followSettingsPage()
         val service = Playback.service
         if (service?.playingNatively == true) {
             handBackToPage(service)
@@ -157,6 +163,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handOverToPhone() {
+        if (!Settings(this).backgroundPlayback) return
         val token = Settings(this).token ?: return
         val service = Playback.service ?: return
         if (service.playingNatively || !::web.isInitialized) return
@@ -164,6 +171,85 @@ class MainActivity : AppCompatActivity() {
             val state = Bridge.parse(result) ?: return@evaluateJavascript
             if (state.playing && !visible) service.takeOver(state, server, token)
         }
+    }
+
+    private fun followSettingsPage() {
+        web.evaluateJavascript(SettingsPage.READ) { result ->
+            val ask = SettingsPage.parse(result)
+            if (ask == null) {
+                settingsShown = null
+                return@evaluateJavascript
+            }
+            var error: String? = null
+            for (command in ask.commands) error = obey(command) ?: error
+            val payload = SettingsPage.payload(settingsView(), error)
+            if (error == null && settingsShown == ask.page to payload) return@evaluateJavascript
+            settingsShown = ask.page to payload
+            web.evaluateJavascript(SettingsPage.pushScript(payload), null)
+        }
+    }
+
+    private fun settingsView(): AppSettingsView {
+        val settings = Settings(this)
+        return AppSettingsView(
+            version = BuildConfig.VERSION_NAME,
+            connected = settings.token != null,
+            user = settings.user,
+            backgroundPlayback = settings.backgroundPlayback,
+            notifications = settings.notifications,
+            notificationsAllowed = NoticeWorker.allowed(this),
+        )
+    }
+
+    private fun obey(command: SettingsCommand): String? {
+        val settings = Settings(this)
+        when (command) {
+            is SettingsCommand.Option -> when (command.name) {
+                SettingsPage.OPTION_BACKGROUND -> settings.backgroundPlayback = command.value
+                SettingsPage.OPTION_NOTIFICATIONS -> {
+                    settings.notifications = command.value
+                    if (!command.value) {
+                        NoticeWorker.stop(this)
+                    } else if (settings.token != null) {
+                        settings.askedForNotifications = false
+                        startNotifications()
+                    }
+                }
+            }
+            SettingsCommand.Connect -> web.loadUrl(Bridge.connectAddress(server, "Android (${Build.MODEL})"))
+            SettingsCommand.Disconnect -> disconnect()
+            SettingsCommand.ChangeServer -> startActivity(Intent(this, SetupActivity::class.java))
+            SettingsCommand.NotificationSettings -> {
+                val open = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
+                try {
+                    startActivity(open)
+                } catch (_: ActivityNotFoundException) {
+                    return getString(R.string.no_notification_settings)
+                }
+            }
+        }
+        return null
+    }
+
+    private fun disconnect() {
+        val settings = Settings(this)
+        val token = settings.token ?: return
+        val home = server
+        worker.execute {
+            runCatching {
+                val connection = URL("$home/api/token").openConnection() as HttpURLConnection
+                connection.requestMethod = "DELETE"
+                connection.connectTimeout = 10_000
+                connection.readTimeout = 10_000
+                connection.setRequestProperty("Authorization", "Token $token")
+                connection.responseCode
+                connection.disconnect()
+            }
+        }
+        NoticeWorker.stop(this)
+        settings.forgetConnection()
+        settings.askedToConnect = true
     }
 
     private fun startNotifications() {
@@ -307,6 +393,7 @@ class MainActivity : AppCompatActivity() {
         Playback.runInPage = null
         Playback.service?.let { if (!it.playingNatively) it.showPage(null, server) }
         controller?.let { MediaController.releaseFuture(it) }
+        worker.shutdown()
         controller = null
         if (::web.isInitialized) web.destroy()
         super.onDestroy()

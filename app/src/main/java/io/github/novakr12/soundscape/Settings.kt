@@ -18,6 +18,10 @@ class Settings(context: Context) {
         get() = stored.getString(USER, null)
         set(value) = stored.edit { putString(USER, value) }
 
+    var backgroundPlayback: Boolean
+        get() = stored.getBoolean(BACKGROUND, true)
+        set(value) = stored.edit { putBoolean(BACKGROUND, value) }
+
     var notifications: Boolean
         get() = stored.getBoolean(NOTIFICATIONS, true)
         set(value) = stored.edit { putBoolean(NOTIFICATIONS, value) }
@@ -47,6 +51,7 @@ class Settings(context: Context) {
         const val USER = "user"
         const val ASKED = "asked_to_connect"
         const val NOTIFICATIONS = "notifications"
+        const val BACKGROUND = "background_playback"
         const val LAST_NOTIFICATION = "last_notification"
         const val ASKED_NOTIFICATIONS = "asked_for_notifications"
     }

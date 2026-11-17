@@ -12,9 +12,15 @@ The app needs Android 8.0 or newer.
 
 Type the address you open Soundscape at, for example `music.example.com`. The app adds `https://` when you leave it out, checks that a Soundscape server answers there, and remembers it. Then log in as you would in a browser.
 
-Right after logging in the first time, Soundscape asks whether to connect the app. Connecting gives the app its own token, so it can keep your music playing when you leave it and show your notifications (see below). On Android 13 and newer it then asks once whether it may show notifications. You can see and revoke the token on Soundscape's Connect page. If you skip it, long-press the app icon and choose **Background playback** to connect later.
+Right after logging in the first time, Soundscape asks whether to connect the app. Connecting gives the app its own token, so it can keep your music playing when you leave it and show your notifications (see below). On Android 13 and newer it then asks once whether it may show notifications. You can see and revoke the token on Soundscape's Connect page. If you skip it, connect later from the app's settings (see below).
 
-To switch servers later, long-press the app icon and choose **Change server**. When the server can't be reached, the app shows a page with **Try again** and **Change server** too.
+## Settings
+
+The app's settings sit on Soundscape's own Settings page, under **This app**, next to your account and the player: background playback, notifications, connecting or disconnecting the app, and changing the server. They only show inside the app, and need an up-to-date Soundscape server. Long-press the app icon and choose **Settings** to go straight there.
+
+**Disconnect** revokes the app's token on your server and turns off background playback and notifications until you connect again.
+
+If the server can't be reached, the app shows a page with **Try again** and **Change server**, and long-pressing the icon offers **Change server** too.
 
 ## What it does now
 
@@ -28,7 +34,7 @@ To switch servers later, long-press the app icon and choose **Change server**. W
 
 Once the app is connected, it checks Soundscape for new notifications every 15 minutes, the most often Android lets apps check in the background, and only when the phone is online: new followers, someone passing you on the leaderboard, milestones and new releases from artists you play. Tapping one opens its page in the app. The first check after connecting only notes where things stand, so you don't get a flood of old ones, and more than three at once fold into one "more notifications" line.
 
-Android's own settings for the app (long-press the icon → App info → Notifications) turn them off or change how they show. If you revoke the app's token on Soundscape's Connect page, it stops checking and asks to connect again next time you open it.
+Turn them off under **This app** on Soundscape's Settings page, or in Android's own settings for the app (long-press the icon → App info → Notifications), which also change how they show. If you revoke the app's token on Soundscape's Connect page, it stops checking and asks to connect again next time you open it.
 
 ## What's coming
 
