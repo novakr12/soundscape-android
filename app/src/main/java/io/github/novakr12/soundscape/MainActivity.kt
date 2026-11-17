@@ -49,12 +49,13 @@ class MainActivity : AppCompatActivity() {
     private val main = Handler(Looper.getMainLooper())
     private var controller: ListenableFuture<MediaController>? = null
     private var visible = false
+    private var pagePlaying = false
     private var settingsShown: Pair<String, String>? = null
     private val worker = Executors.newSingleThreadExecutor()
     private val tick = object : Runnable {
         override fun run() {
             followPage()
-            if (visible) main.postDelayed(this, PAGE_TICK_MS)
+            if (visible || pagePlaying) main.postDelayed(this, PAGE_TICK_MS)
         }
     }
 
@@ -100,7 +101,10 @@ class MainActivity : AppCompatActivity() {
                 if (web.canGoBack()) web.goBack() else moveTaskToBack(true)
             }
         })
-        Playback.runInPage = { script -> web.evaluateJavascript(script, null) }
+        Playback.runInPage = { script ->
+            web.evaluateJavascript(script, null)
+            followSoon()
+        }
         if (Settings(this).token != null) NoticeWorker.start(this)
         if (savedInstanceState == null || web.restoreState(savedInstanceState) == null) {
             web.loadUrl(firstPage(intent))
@@ -135,24 +139,35 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         visible = false
-        main.removeCallbacks(tick)
         handOverToPhone()
         super.onStop()
     }
 
     private fun followPage() {
         if (!::web.isInitialized) return
-        followSettingsPage()
+        if (visible) followSettingsPage()
         val service = Playback.service
         if (service?.playingNatively == true) {
-            handBackToPage(service)
+            pagePlaying = false
+            if (visible) handBackToPage(service)
             return
         }
         web.evaluateJavascript(Bridge.READ) { result ->
             val state = Bridge.parse(result)
+            val wasPlaying = pagePlaying
+            pagePlaying = state?.playing == true
             Playback.service?.showPage(state, server)
-            if (state?.playing == true) connectToService()
+            if (pagePlaying) connectToService()
+            if (pagePlaying && !wasPlaying && !visible) {
+                main.removeCallbacks(tick)
+                main.postDelayed(tick, PAGE_TICK_MS)
+            }
         }
+    }
+
+    private fun followSoon() {
+        main.removeCallbacks(tick)
+        main.postDelayed(tick, FOLLOW_SOON_MS)
     }
 
     private fun handBackToPage(service: PlaybackService) {
@@ -403,6 +418,7 @@ class MainActivity : AppCompatActivity() {
         const val ACTION_OPEN = "io.github.novakr12.soundscape.OPEN"
         const val EXTRA_PAGE = "page"
         private const val PAGE_TICK_MS = 1000L
+        private const val FOLLOW_SOON_MS = 500L
         private const val ACTION_CONNECT = "io.github.novakr12.soundscape.CONNECT"
     }
 }

@@ -77,6 +77,9 @@ class PagePlayer(looper: Looper, private val send: (String) -> Unit) : SimpleBas
 
     override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
         val state = page ?: return Futures.immediateVoidFuture()
+        if (mediaItemIndex in state.tracks.indices) {
+            page = state.copy(position = mediaItemIndex, time = positionMs.coerceAtLeast(0) / 1000.0, duration = null)
+        }
         val command = when {
             seekCommand == Player.COMMAND_SEEK_TO_NEXT || seekCommand == Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM ->
                 Bridge.command("next")
