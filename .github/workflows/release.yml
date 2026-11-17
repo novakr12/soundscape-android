@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish the APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: gradle/actions/wrapper-validation@v4
+      - name: Check the version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          found=$(sed -n 's/^ *versionName = "\(.*\)"$/\1/p' app/build.gradle.kts)
+          if [ "$found" != "$version" ]; then
+            echo "Tag $GITHUB_REF_NAME doesn't match versionName $found in app/build.gradle.kts"
+            exit 1
+          fi
+      - name: Check the signing secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SOUNDSCAPE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "The SOUNDSCAPE_KEYSTORE_BASE64 secret is missing. See Signing in the README."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build
+        env:
+          SOUNDSCAPE_KEYSTORE: ${{ runner.temp }}/release.keystore
+          SOUNDSCAPE_KEYSTORE_PASSWORD: ${{ secrets.SOUNDSCAPE_KEYSTORE_PASSWORD }}
+          SOUNDSCAPE_KEY_ALIAS: ${{ secrets.SOUNDSCAPE_KEY_ALIAS }}
+          SOUNDSCAPE_KEY_PASSWORD: ${{ secrets.SOUNDSCAPE_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon testDebugUnitTest assembleRelease
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir release
+          cp app/build/outputs/apk/release/app-release.apk "release/soundscape-$version.apk"
+          (cd release && sha256sum -- *.apk > SHA256SUMS)
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "Soundscape for Android $version" \
+            --generate-notes

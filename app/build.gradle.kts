@@ -1,0 +1,60 @@
+plugins {
+    id("com.android.application")
+}
+
+val keystore = System.getenv("SOUNDSCAPE_KEYSTORE")
+
+android {
+    namespace = "io.github.novakr12.soundscape"
+    compileSdk = 37
+
+    defaultConfig {
+        applicationId = "io.github.novakr12.soundscape"
+        minSdk = 26
+        targetSdk = 36
+        versionCode = 1
+        versionName = "0.1.0"
+    }
+
+    signingConfigs {
+        if (keystore != null) {
+            create("release") {
+                storeFile = file(keystore)
+                storePassword = System.getenv("SOUNDSCAPE_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("SOUNDSCAPE_KEY_ALIAS")
+                keyPassword = System.getenv("SOUNDSCAPE_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            if (keystore != null) signingConfig = signingConfigs.getByName("release")
+        }
+    }
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    lint {
+        warningsAsErrors = false
+        abortOnError = true
+    }
+}
+
+dependencies {
+    implementation("androidx.core:core-ktx:1.19.1")
+    implementation("androidx.activity:activity-ktx:1.13.0")
+    implementation("androidx.appcompat:appcompat:1.8.0")
+    implementation("androidx.webkit:webkit:1.18.0")
+    testImplementation("junit:junit:4.13.2")
+}

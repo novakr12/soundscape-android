@@ -1,0 +1,19 @@
+<resources>
+    <string name="app_name">Soundscape</string>
+    <string name="setup_title">Connect to Soundscape</string>
+    <string name="setup_heading">Your Soundscape server</string>
+    <string name="setup_explain">Type the address you open Soundscape at, for example music.example.com. The app checks that it answers before saving it.</string>
+    <string name="setup_hint">music.example.com</string>
+    <string name="setup_connect">Connect</string>
+    <string name="setup_checking">Checking…</string>
+    <string name="setup_bad_address">That doesn\'t look like a web address. Try something like music.example.com.</string>
+    <string name="setup_not_soundscape">Something answered at that address, but it isn\'t a Soundscape server.</string>
+    <string name="setup_unreachable">Couldn\'t reach that address: %1$s</string>
+    <string name="trouble_heading">Can\'t reach your server</string>
+    <string name="trouble_detail">%1$s didn\'t answer (%2$s). Check your connection, or that the server is running.</string>
+    <string name="retry">Try again</string>
+    <string name="change_server">Change server</string>
+    <string name="downloading">Downloading %1$s</string>
+    <string name="no_app_for_link">No app on this phone can open that link.</string>
+    <string name="shortcut_change_server">Change server</string>
+</resources>
