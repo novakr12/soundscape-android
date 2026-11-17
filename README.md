@@ -38,6 +38,12 @@ Downloaded songs play from the phone: they don't use mobile data when you're onl
 
 Songs you play offline still count: the app remembers each play with its time and sends them to Soundscape when it's back online.
 
+## Devices
+
+Soundscape's **Devices** list, in the player on any of your Soundscape windows, shows the phone as "Soundscape on" and its model name. From your computer you can see what the phone plays, pause it, skip, seek, change its volume, send it your music or take its music over, also while it plays in the background with the screen off. The app needs to be connected and **keep the music playing** turned on under **This app**.
+
+The phone stays in the list while the app is open or playing. If you close it from the recent apps while nothing plays, it drops off after a couple of minutes. Music sent to the phone while the app is in the background starts within a few seconds, and when you open the app again it continues with that music.
+
 ## Notifications
 
 Once the app is connected, it checks Soundscape for new notifications every 15 minutes, the most often Android lets apps check in the background, and only when the phone is online: new followers, someone passing you on the leaderboard, milestones and new releases from artists you play. Tapping one opens its page in the app. The first check after connecting only notes where things stand, so you don't get a flood of old ones, and more than three at once fold into one "more notifications" line.

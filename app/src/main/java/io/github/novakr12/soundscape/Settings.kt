@@ -22,6 +22,10 @@ class Settings(context: Context) {
         get() = stored.getBoolean(BACKGROUND, true)
         set(value) = stored.edit { putBoolean(BACKGROUND, value) }
 
+    val deviceId: String
+        get() = stored.getString(DEVICE_ID, null)?.takeIf { Remote.isDeviceId(it) }
+            ?: Remote.newDeviceId().also { made -> stored.edit { putString(DEVICE_ID, made) } }
+
     var weeklyRecap: Boolean
         get() = stored.getBoolean(WEEKLY_RECAP, true)
         set(value) = stored.edit { putBoolean(WEEKLY_RECAP, value) }
@@ -89,6 +93,7 @@ class Settings(context: Context) {
         const val NOTIFICATIONS = "notifications"
         const val BACKGROUND = "background_playback"
         const val WIFI_ONLY = "downloads_wifi_only"
+        const val DEVICE_ID = "device_id"
         const val WEEKLY_RECAP = "weekly_recap"
         const val STREAK_REMINDER = "streak_reminder"
         const val UPDATE_NOTICE = "update_notice"

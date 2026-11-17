@@ -27,6 +27,14 @@ object Server {
             portOf(home) == portOf(there)
     }
 
+    fun origin(server: String): String? {
+        val uri = runCatching { URI(server) }.getOrNull() ?: return null
+        val scheme = uri.scheme?.lowercase()?.takeIf { it == "https" || it == "http" } ?: return null
+        val host = uri.host?.lowercase() ?: return null
+        val port = if (uri.port == -1) "" else ":${uri.port}"
+        return "$scheme://$host$port"
+    }
+
     fun looksLikeSoundscape(body: String): Boolean = SOUNDSCAPE.containsMatchIn(body)
 
     fun infoAddress(server: String) = "$server/api/info"

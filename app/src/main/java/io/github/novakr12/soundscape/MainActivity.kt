@@ -36,6 +36,9 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 import androidx.media3.session.MediaController
+import androidx.webkit.ScriptHandler
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import java.net.HttpURLConnection
@@ -54,12 +57,19 @@ class MainActivity : AppCompatActivity() {
     private var settingsShown: Pair<String, String>? = null
     private var downloadsShown: Pair<String, String>? = null
     private val worker = Executors.newSingleThreadExecutor()
+    private var deviceScript: ScriptHandler? = null
     private val tick = object : Runnable {
         override fun run() {
             followPage()
-            if (visible || pagePlaying) main.postDelayed(this, PAGE_TICK_MS)
+            if (visible || pagePlaying) {
+                main.postDelayed(this, PAGE_TICK_MS)
+            } else if (canPlayInBackground()) {
+                main.postDelayed(this, BACKGROUND_TICK_MS)
+            }
         }
     }
+
+    private fun canPlayInBackground() = Settings(this).let { it.backgroundPlayback && it.token != null }
 
     private val askToNotify = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
@@ -171,6 +181,9 @@ class MainActivity : AppCompatActivity() {
             pagePlaying = state?.playing == true
             Playback.service?.showPage(state, server)
             if (pagePlaying) connectToService()
+            if (pagePlaying && state != null && !visible && canPlayInBackground()) {
+                Settings(this).token?.let { token -> Playback.service?.takeOver(state, server, token) }
+            }
             if (pagePlaying && !wasPlaying && !visible) {
                 main.removeCallbacks(tick)
                 main.postDelayed(tick, PAGE_TICK_MS)
@@ -351,6 +364,7 @@ class MainActivity : AppCompatActivity() {
             setSupportMultipleWindows(false)
             userAgentString = "$userAgentString SoundscapeAndroid/${BuildConfig.VERSION_NAME}"
         }
+        nameThisDevice()
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val address = request.url.toString()
@@ -444,11 +458,21 @@ class MainActivity : AppCompatActivity() {
         matchBarsToTheme()
     }
 
+    private fun nameThisDevice() {
+        deviceScript?.remove()
+        deviceScript = null
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        val origin = Server.origin(server) ?: return
+        val script = Remote.pageScript(Settings(this).deviceId, Remote.deviceName(Build.MODEL))
+        deviceScript = WebViewCompat.addDocumentStartJavaScript(web, script, setOf(origin))
+    }
+
     override fun onResume() {
         super.onResume()
         val now = Settings(this).server
         if (now != null && now != server) {
             server = now
+            nameThisDevice()
             web.clearHistory()
             web.loadUrl(server)
         }
@@ -475,6 +499,7 @@ class MainActivity : AppCompatActivity() {
         const val EXTRA_PAGE = "page"
         private const val PAGE_TICK_MS = 1000L
         private const val FOLLOW_SOON_MS = 500L
+        private const val BACKGROUND_TICK_MS = 5000L
         private const val ACTION_CONNECT = "io.github.novakr12.soundscape.CONNECT"
     }
 }

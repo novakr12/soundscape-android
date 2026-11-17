@@ -29,7 +29,7 @@ data class PageState(
     val current: BridgeTrack get() = tracks[position]
 }
 
-data class HandBack(val position: Int, val time: Double, val playing: Boolean)
+data class HandBack(val position: Int, val time: Double, val playing: Boolean, val tracks: List<BridgeTrack>? = null)
 
 object Bridge {
     const val READ =
@@ -46,7 +46,8 @@ object Bridge {
 
     fun handBack(back: HandBack): String {
         val time = Math.round(back.time.coerceAtLeast(0.0) * 10) / 10.0
-        return "(() => { const p = window.soundscapePlayer; return p ? p.handBack({ position: ${back.position}, time: $time, playing: ${back.playing} }) : false; })()"
+        val tracks = back.tracks?.let { ", tracks: ${Remote.handed(it)}" }.orEmpty()
+        return "(() => { const p = window.soundscapePlayer; return p ? p.handBack({ position: ${back.position}, time: $time, playing: ${back.playing}$tracks }) : false; })()"
     }
 
     fun parse(json: String?): PageState? {

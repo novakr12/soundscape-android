@@ -2,6 +2,7 @@ package io.github.novakr12.soundscape
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.webkit.CookieManager
@@ -90,8 +91,7 @@ class PlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
-        val items = state.tracks.map { PagePlayer.mediaItemFor(server, it, Bridge.streamAddress(server, it), it.trackId) }
-        player.setMediaItems(items, state.position, (state.time * 1000).toLong())
+        player.setMediaItems(itemsFor(server, state.tracks), state.position, (state.time * 1000).toLong())
         player.repeatMode = Bridge.repeatMode(state.repeat)
         val running = Native(player, state, server, token, fromPage)
         native = running
@@ -106,7 +106,12 @@ class PlaybackService : MediaSessionService() {
     fun handBackState(): HandBack? {
         val running = native?.takeIf { it.live } ?: return null
         val player = running.player
-        return HandBack(player.currentMediaItemIndex, player.currentPosition / 1000.0, player.playWhenReady)
+        return HandBack(
+            player.currentMediaItemIndex,
+            player.currentPosition / 1000.0,
+            player.playWhenReady,
+            running.tracks.takeIf { running.replaced },
+        )
     }
 
     fun finishHandBack() {
@@ -115,6 +120,9 @@ class PlaybackService : MediaSessionService() {
         session.player = pagePlayer
         running.release()
     }
+
+    private fun itemsFor(server: String, tracks: List<BridgeTrack>) =
+        tracks.map { PagePlayer.mediaItemFor(server, it, Bridge.streamAddress(server, it), it.trackId) }
 
     private fun giveUp(running: Native) {
         if (native !== running) return
@@ -184,6 +192,10 @@ class PlaybackService : MediaSessionService() {
         val fromPage: Boolean,
     ) : Player.Listener {
         var live = false
+        var tracks = state.tracks
+        var replaced = false
+        private var volume = state.volume
+        private var link: RemoteLink? = null
         private var heard = 0.0
         private var before: Double? = null
         private var counted = false
@@ -195,13 +207,16 @@ class PlaybackService : MediaSessionService() {
             }
         }
 
-        fun volumeAt(index: Int) = (state.volume * (state.tracks.getOrNull(index)?.level ?: 1.0)).toFloat()
+        fun volumeAt(index: Int) = (volume * (tracks.getOrNull(index)?.level ?: 1.0)).toFloat()
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            link?.reportSoon()
             if (!isPlaying || live) return
             live = true
             session.player = player
             if (fromPage) Playback.runInPage?.invoke(Bridge.command("pause"))
+            Playback.runInPage?.invoke(Remote.holdScript(true))
+            connect()
             announce()
             main.post(tick)
         }
@@ -212,6 +227,74 @@ class PlaybackService : MediaSessionService() {
             before = null
             counted = false
             if (live) announce()
+            link?.reportSoon()
+        }
+
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int,
+        ) {
+            link?.reportSoon()
+        }
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            link?.reportSoon()
+        }
+
+        private fun connect() {
+            if (link != null || token.isEmpty() || server == OFFLINE) return
+            val settings = Settings(this@PlaybackService)
+            link = RemoteLink(server, token, settings.deviceId, Remote.deviceName(Build.MODEL), ::snapshot, ::obey)
+                .also { it.start() }
+        }
+
+        private fun snapshot(): RemoteSnapshot {
+            val index = player.currentMediaItemIndex
+            val track = tracks.getOrNull(index)
+            val length = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }?.let { it / 1000.0 } ?: track?.duration
+            val going = player.playWhenReady &&
+                player.playbackState != Player.STATE_ENDED &&
+                player.playbackState != Player.STATE_IDLE
+            return RemoteSnapshot(track, going, player.currentPosition / 1000.0, length, volume)
+        }
+
+        private fun obey(command: RemoteCommand) {
+            when (command) {
+                RemoteCommand.Play -> player.play()
+                RemoteCommand.Pause -> player.pause()
+                RemoteCommand.Toggle -> if (player.playWhenReady) player.pause() else player.play()
+                RemoteCommand.Next -> if (player.hasNextMediaItem()) player.seekToNextMediaItem()
+                RemoteCommand.Previous ->
+                    if (player.currentPosition / 1000.0 > Remote.RESTART_AFTER_SECONDS || !player.hasPreviousMediaItem()) {
+                        player.seekTo(0)
+                    } else {
+                        player.seekToPreviousMediaItem()
+                    }
+                is RemoteCommand.Seek -> player.seekTo((command.seconds * 1000).toLong())
+                is RemoteCommand.Volume -> {
+                    volume = command.volume
+                    player.volume = volumeAt(player.currentMediaItemIndex)
+                }
+                is RemoteCommand.Take -> {
+                    tracks = command.tracks
+                    replaced = true
+                    announced = -1
+                    player.setMediaItems(itemsFor(server, tracks), command.position, (command.time * 1000).toLong())
+                    player.volume = volumeAt(command.position)
+                    player.prepare()
+                    player.playWhenReady = command.playing
+                }
+                is RemoteCommand.Send -> {
+                    val body = Remote.send(
+                        command.to,
+                        tracks,
+                        player.currentMediaItemIndex,
+                        player.currentPosition / 1000.0,
+                    ) ?: return
+                    link?.send(body) { sent -> if (sent) player.pause() }
+                }
+            }
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -222,7 +305,7 @@ class PlaybackService : MediaSessionService() {
             val index = player.currentMediaItemIndex
             if (index == announced && player.repeatMode != Player.REPEAT_MODE_ONE) return
             announced = index
-            state.tracks.getOrNull(index)?.let { report("now-playing", it, server, token) }
+            tracks.getOrNull(index)?.let { report("now-playing", it, server, token) }
         }
 
         private fun follow() {
@@ -233,7 +316,7 @@ class PlaybackService : MediaSessionService() {
             val now = player.currentPosition / 1000.0
             heard += Bridge.heardStep(before, now)
             before = now
-            val track = state.tracks.getOrNull(player.currentMediaItemIndex) ?: return
+            val track = tracks.getOrNull(player.currentMediaItemIndex) ?: return
             val length = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }?.let { it / 1000.0 } ?: track.duration
             if (!counted && Bridge.countsAsPlay(heard, length)) {
                 counted = true
@@ -242,6 +325,9 @@ class PlaybackService : MediaSessionService() {
         }
 
         fun release() {
+            link?.stop()
+            link = null
+            if (live) Playback.runInPage?.invoke(Remote.holdScript(false))
             main.removeCallbacks(tick)
             player.removeListener(this)
             player.release()
