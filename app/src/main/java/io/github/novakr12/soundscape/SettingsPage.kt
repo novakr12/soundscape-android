@@ -9,6 +9,7 @@ sealed class SettingsCommand {
     data object ChangeServer : SettingsCommand()
     data object NotificationSettings : SettingsCommand()
     data object OpenDownloads : SettingsCommand()
+    data object DownloadUpdate : SettingsCommand()
 }
 
 data class SettingsAsk(val page: String, val commands: List<SettingsCommand>)
@@ -22,12 +23,20 @@ data class AppSettingsView(
     val notificationsAllowed: Boolean,
     val downloadsWifiOnly: Boolean = false,
     val downloads: String? = null,
+    val weeklyRecap: Boolean = true,
+    val streakReminder: Boolean = false,
+    val updateNotice: Boolean = true,
+    val update: String? = null,
 )
 
 object SettingsPage {
     const val OPTION_BACKGROUND = "background_playback"
     const val OPTION_NOTIFICATIONS = "notifications"
     const val OPTION_WIFI = "downloads_wifi_only"
+    const val OPTION_RECAP = "weekly_recap"
+    const val OPTION_STREAK = "streak_reminder"
+    const val OPTION_UPDATE = "update_notice"
+    private val OPTIONS = setOf(OPTION_BACKGROUND, OPTION_NOTIFICATIONS, OPTION_WIFI, OPTION_RECAP, OPTION_STREAK, OPTION_UPDATE)
     private const val MOST_AT_ONCE = 20
 
     const val READ = """(() => {
@@ -48,7 +57,7 @@ object SettingsPage {
                 "option" -> {
                     val name = item.optString("name")
                     val value = item.opt("value")
-                    if ((name == OPTION_BACKGROUND || name == OPTION_NOTIFICATIONS || name == OPTION_WIFI) && value is Boolean) {
+                    if (name in OPTIONS && value is Boolean) {
                         SettingsCommand.Option(name, value)
                     } else {
                         null
@@ -59,6 +68,7 @@ object SettingsPage {
                 "change-server" -> SettingsCommand.ChangeServer
                 "notification-settings" -> SettingsCommand.NotificationSettings
                 "open-downloads" -> SettingsCommand.OpenDownloads
+                "download-update" -> SettingsCommand.DownloadUpdate
                 else -> null
             }
         }
@@ -77,7 +87,11 @@ object SettingsPage {
                 .put(OPTION_NOTIFICATIONS, view.notifications)
                 .put("notifications_allowed", view.notificationsAllowed)
                 .put(OPTION_WIFI, view.downloadsWifiOnly)
-                .put("downloads", view.downloads ?: JSONObject.NULL),
+                .put("downloads", view.downloads ?: JSONObject.NULL)
+                .put(OPTION_RECAP, view.weeklyRecap)
+                .put(OPTION_STREAK, view.streakReminder)
+                .put(OPTION_UPDATE, view.updateNotice)
+                .put("update", view.update ?: JSONObject.NULL),
         )
         .put("error", error ?: JSONObject.NULL)
         .toString()

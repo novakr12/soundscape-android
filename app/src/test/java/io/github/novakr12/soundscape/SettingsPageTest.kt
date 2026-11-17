@@ -15,9 +15,10 @@ class SettingsPageTest {
                 {"do":"option","name":"background_playback","value":false},
                 {"do":"option","name":"notifications","value":true},
                 {"do":"option","name":"downloads_wifi_only","value":true},
+                {"do":"option","name":"streak_reminder","value":true},
                 {"do":"option","name":"scrobbling","value":true},
                 {"do":"option","name":"notifications","value":"yes"},
-                {"do":"connect"},{"do":"disconnect"},{"do":"change-server"},{"do":"notification-settings"},{"do":"open-downloads"},
+                {"do":"connect"},{"do":"disconnect"},{"do":"change-server"},{"do":"notification-settings"},{"do":"open-downloads"},{"do":"download-update"},
                 {"do":"sign-out"},"connect"
             ]}""",
         )!!
@@ -27,11 +28,13 @@ class SettingsPageTest {
                 SettingsCommand.Option("background_playback", false),
                 SettingsCommand.Option("notifications", true),
                 SettingsCommand.Option("downloads_wifi_only", true),
+                SettingsCommand.Option("streak_reminder", true),
                 SettingsCommand.Connect,
                 SettingsCommand.Disconnect,
                 SettingsCommand.ChangeServer,
                 SettingsCommand.NotificationSettings,
                 SettingsCommand.OpenDownloads,
+                SettingsCommand.DownloadUpdate,
             ),
             ask.commands,
         )
@@ -55,7 +58,7 @@ class SettingsPageTest {
     fun describesItselfAsTheAndroidApp() {
         val payload = JSONObject(
             SettingsPage.payload(
-                AppSettingsView("0.4.0", true, "ana", true, false, true, true, "3 songs · 20 MB"),
+                AppSettingsView("0.4.0", true, "ana", true, false, true, true, "3 songs · 20 MB", streakReminder = true, update = "0.5.0"),
                 null,
             ),
         )
@@ -68,6 +71,10 @@ class SettingsPageTest {
         assertTrue(payload.isNull("error"))
         assertTrue(settings.getBoolean("downloads_wifi_only"))
         assertEquals("3 songs · 20 MB", settings.getString("downloads"))
+        assertTrue(settings.getBoolean("weekly_recap"))
+        assertTrue(settings.getBoolean("streak_reminder"))
+        assertTrue(settings.getBoolean("update_notice"))
+        assertEquals("0.5.0", settings.getString("update"))
         assertTrue(JSONObject(SettingsPage.payload(AppSettingsView("1", false, null, true, true, true), "x")).getJSONObject("settings").isNull("user"))
     }
 

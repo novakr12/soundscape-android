@@ -44,6 +44,15 @@ Once the app is connected, it checks Soundscape for new notifications every 15 m
 
 Turn them off under **This app** on Soundscape's Settings page, or in Android's own settings for the app (long-press the icon → App info → Notifications), which also change how they show. If you revoke the app's token on Soundscape's Connect page, it stops checking and asks to connect again next time you open it.
 
+Two more come through the same check, each with its own switch under **This app**:
+
+- **Your week in music**, on Monday: plays, listening time, your most played artist and your place among friends. Tapping it opens the home page with the full recap. On by default.
+- **Streak reminder**: at 9 pm, if you have a streak going and haven't played anything yet that day. Off by default.
+
+## Update notice
+
+Once a day the app looks at the latest release on GitHub. When a newer version is out, it shows one notification for it, and **This app** on the Settings page shows the new version with a **Download** button. Both open the release page, where you download the new APK and install it over the old one. Turn it off under **This app**.
+
 ## What's coming
 
 1. Android Auto

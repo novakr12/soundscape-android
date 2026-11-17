@@ -30,6 +30,7 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.net.toUri
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -111,7 +112,10 @@ class MainActivity : AppCompatActivity() {
         }
         if (Settings(this).token != null) NoticeWorker.start(this)
         val app = applicationContext
-        worker.execute { OfflinePlays.send(app) }
+        worker.execute {
+            OfflinePlays.send(app)
+            NoticeWorker.checkForUpdate(app, Settings(app))
+        }
         if (savedInstanceState == null || web.restoreState(savedInstanceState) == null) {
             web.loadUrl(firstPage(intent))
         }
@@ -244,6 +248,10 @@ class MainActivity : AppCompatActivity() {
             notificationsAllowed = NoticeWorker.allowed(this),
             downloadsWifiOnly = settings.downloadsWifiOnly,
             downloads = Downloads.summary(this),
+            weeklyRecap = settings.weeklyRecap,
+            streakReminder = settings.streakReminder,
+            updateNotice = settings.updateNotice,
+            update = settings.updateAvailable?.takeIf { Extras.newer(BuildConfig.VERSION_NAME, it) },
         )
     }
 
@@ -253,6 +261,16 @@ class MainActivity : AppCompatActivity() {
             is SettingsCommand.Option -> when (command.name) {
                 SettingsPage.OPTION_BACKGROUND -> settings.backgroundPlayback = command.value
                 SettingsPage.OPTION_WIFI -> Downloads.setWifiOnly(this, command.value)
+                SettingsPage.OPTION_RECAP -> settings.weeklyRecap = command.value
+                SettingsPage.OPTION_STREAK -> settings.streakReminder = command.value
+                SettingsPage.OPTION_UPDATE -> {
+                    settings.updateNotice = command.value
+                    if (command.value) {
+                        settings.updateCheckedAt = 0
+                        val app = applicationContext
+                        worker.execute { NoticeWorker.checkForUpdate(app, Settings(app)) }
+                    }
+                }
                 SettingsPage.OPTION_NOTIFICATIONS -> {
                     settings.notifications = command.value
                     if (!command.value) {
@@ -267,6 +285,11 @@ class MainActivity : AppCompatActivity() {
             SettingsCommand.Disconnect -> disconnect()
             SettingsCommand.ChangeServer -> startActivity(Intent(this, SetupActivity::class.java))
             SettingsCommand.OpenDownloads -> startActivity(Intent(this, DownloadsActivity::class.java))
+            SettingsCommand.DownloadUpdate -> try {
+                startActivity(Intent(Intent.ACTION_VIEW, Extras.RELEASES.toUri()))
+            } catch (_: ActivityNotFoundException) {
+                return getString(R.string.no_browser)
+            }
             SettingsCommand.NotificationSettings -> {
                 val open = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                     .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)

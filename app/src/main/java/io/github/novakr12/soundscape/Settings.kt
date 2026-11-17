@@ -22,6 +22,38 @@ class Settings(context: Context) {
         get() = stored.getBoolean(BACKGROUND, true)
         set(value) = stored.edit { putBoolean(BACKGROUND, value) }
 
+    var weeklyRecap: Boolean
+        get() = stored.getBoolean(WEEKLY_RECAP, true)
+        set(value) = stored.edit { putBoolean(WEEKLY_RECAP, value) }
+
+    var streakReminder: Boolean
+        get() = stored.getBoolean(STREAK_REMINDER, false)
+        set(value) = stored.edit { putBoolean(STREAK_REMINDER, value) }
+
+    var updateNotice: Boolean
+        get() = stored.getBoolean(UPDATE_NOTICE, true)
+        set(value) = stored.edit { putBoolean(UPDATE_NOTICE, value) }
+
+    var lastRecap: String?
+        get() = stored.getString(LAST_RECAP, null)
+        set(value) = stored.edit { putString(LAST_RECAP, value) }
+
+    var lastReminder: String?
+        get() = stored.getString(LAST_REMINDER, null)
+        set(value) = stored.edit { putString(LAST_REMINDER, value) }
+
+    var toldUpdate: String?
+        get() = stored.getString(TOLD_UPDATE, null)
+        set(value) = stored.edit { putString(TOLD_UPDATE, value) }
+
+    var updateAvailable: String?
+        get() = stored.getString(UPDATE_AVAILABLE, null)
+        set(value) = stored.edit { putString(UPDATE_AVAILABLE, value) }
+
+    var updateCheckedAt: Long
+        get() = stored.getLong(UPDATE_CHECKED_AT, 0)
+        set(value) = stored.edit { putLong(UPDATE_CHECKED_AT, value) }
+
     var downloadsWifiOnly: Boolean
         get() = stored.getBoolean(WIFI_ONLY, false)
         set(value) = stored.edit { putBoolean(WIFI_ONLY, value) }
@@ -57,6 +89,14 @@ class Settings(context: Context) {
         const val NOTIFICATIONS = "notifications"
         const val BACKGROUND = "background_playback"
         const val WIFI_ONLY = "downloads_wifi_only"
+        const val WEEKLY_RECAP = "weekly_recap"
+        const val STREAK_REMINDER = "streak_reminder"
+        const val UPDATE_NOTICE = "update_notice"
+        const val LAST_RECAP = "last_recap"
+        const val LAST_REMINDER = "last_reminder"
+        const val TOLD_UPDATE = "told_update"
+        const val UPDATE_AVAILABLE = "update_available"
+        const val UPDATE_CHECKED_AT = "update_checked_at"
         const val LAST_NOTIFICATION = "last_notification"
         const val ASKED_NOTIFICATIONS = "asked_for_notifications"
     }

@@ -33,6 +33,10 @@
     <string name="downloads_waiting">waiting · %1$d%%</string>
     <string name="downloads_play_offline">Play downloads</string>
     <string name="downloads_connect_first">Connect the app first (Settings → This app), then download.</string>
+    <string name="recap_title">Your week in music</string>
+    <string name="update_title">Soundscape %1$s is out</string>
+    <string name="update_body">You have %1$s. Tap to download the new version.</string>
+    <string name="no_browser">This phone has no browser to open the download page.</string>
     <string name="no_notification_settings">This phone has no notification settings to open.</string>
     <string name="notifications_channel">Followers, milestones and new releases</string>
     <string name="connected">Connected. Music keeps playing when you leave the app.</string>

@@ -4,7 +4,7 @@ import org.json.JSONObject
 
 data class Notice(val id: Long, val read: Boolean, val title: String, val body: String, val url: String?)
 
-data class Shown(val title: String, val body: String, val url: String?)
+data class Shown(val title: String, val body: String, val url: String?, val outside: Boolean = false)
 
 object Notices {
     private const val AT_MOST = 3
