@@ -13,6 +13,16 @@
     <shortcut
         android:enabled="true"
         android:icon="@mipmap/ic_launcher"
+        android:shortcutId="downloads"
+        android:shortcutShortLabel="@string/shortcut_downloads">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetClass="io.github.novakr12.soundscape.DownloadsActivity"
+            android:targetPackage="io.github.novakr12.soundscape" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
         android:shortcutId="settings"
         android:shortcutShortLabel="@string/shortcut_settings">
         <intent

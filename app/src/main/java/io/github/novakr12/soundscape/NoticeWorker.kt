@@ -29,6 +29,7 @@ class NoticeWorker(context: Context, parameters: WorkerParameters) : Worker(cont
         val settings = Settings(applicationContext)
         val server = settings.server ?: return Result.success()
         val token = settings.token ?: return Result.success()
+        OfflinePlays.send(applicationContext)
         if (!settings.notifications) return Result.success()
         val connection = runCatching {
             (URL(Notices.address(server, settings.lastNotification)).openConnection() as HttpURLConnection).apply {

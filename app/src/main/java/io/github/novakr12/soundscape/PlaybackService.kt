@@ -38,6 +38,7 @@ class PlaybackService : MediaSessionService() {
     private var native: Native? = null
 
     val playingNatively: Boolean get() = native?.live == true
+    val playingForPage: Boolean get() = native?.let { it.live && it.fromPage } == true
 
     override fun onCreate() {
         super.onCreate()
@@ -63,8 +64,25 @@ class PlaybackService : MediaSessionService() {
 
     fun takeOver(state: PageState, server: String, token: String) {
         if (native != null) return
+        start(state, server, token, fromPage = true)
+    }
+
+    fun playDownloads(tracks: List<BridgeTrack>, at: Int) {
+        if (tracks.isEmpty()) return
+        native?.let {
+            native = null
+            session.player = pagePlayer
+            it.release()
+        }
+        Playback.runInPage?.invoke(Bridge.command("pause"))
+        val settings = Settings(this)
+        val state = PageState(tracks, at.coerceIn(tracks.indices), 0.0, null, true, 1.0, "off")
+        start(state, settings.server ?: OFFLINE, settings.token.orEmpty(), fromPage = false)
+    }
+
+    private fun start(state: PageState, server: String, token: String, fromPage: Boolean) {
         val player = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(streams(token)))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(Downloads.playing(this)))
             .setAudioAttributes(
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
                 true,
@@ -72,16 +90,17 @@ class PlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
-        val items = state.tracks.map { PagePlayer.mediaItemFor(server, it, Bridge.streamAddress(server, it)) }
+        val items = state.tracks.map { PagePlayer.mediaItemFor(server, it, Bridge.streamAddress(server, it), it.trackId) }
         player.setMediaItems(items, state.position, (state.time * 1000).toLong())
         player.repeatMode = Bridge.repeatMode(state.repeat)
-        val running = Native(player, state, server, token)
+        val running = Native(player, state, server, token, fromPage)
         native = running
         player.addListener(running)
         player.volume = running.volumeAt(state.position)
+        if (!fromPage) session.player = player
         player.prepare()
         player.playWhenReady = true
-        main.postDelayed({ if (native === running && !running.live) giveUp(running) }, TAKE_OVER_WITHIN_MS)
+        if (fromPage) main.postDelayed({ if (native === running && !running.live) giveUp(running) }, TAKE_OVER_WITHIN_MS)
     }
 
     fun handBackState(): HandBack? {
@@ -100,6 +119,7 @@ class PlaybackService : MediaSessionService() {
     private fun giveUp(running: Native) {
         if (native !== running) return
         native = null
+        if (session.player === running.player) session.player = pagePlayer
         running.release()
     }
 
@@ -120,12 +140,6 @@ class PlaybackService : MediaSessionService() {
         super.onDestroy()
     }
 
-    private fun streams(token: String): DataSource.Factory = DefaultHttpDataSource.Factory()
-        .setUserAgent("SoundscapeAndroid/${BuildConfig.VERSION_NAME}")
-        .setConnectTimeoutMs(15_000)
-        .setReadTimeoutMs(30_000)
-        .setDefaultRequestProperties(mapOf("Authorization" to "Token $token", "Range" to "bytes=0-"))
-
     private fun withCookies(): DataSource.Factory = DataSource.Factory {
         val cookies = CookieManager.getInstance()
         val factory = DefaultHttpDataSource.Factory().setUserAgent("SoundscapeAndroid/${BuildConfig.VERSION_NAME}")
@@ -136,8 +150,9 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun report(kind: String, track: BridgeTrack, server: String, token: String) {
+        val playedAt = System.currentTimeMillis() / 1000
         reporter.execute {
-            runCatching {
+            val sent = token.isNotEmpty() && server != OFFLINE && runCatching {
                 val connection = URL("$server/api/$kind").openConnection() as HttpURLConnection
                 connection.requestMethod = "POST"
                 connection.connectTimeout = 10_000
@@ -148,8 +163,15 @@ class PlaybackService : MediaSessionService() {
                 val body = JSONObject().put("trackId", track.trackId)
                 track.songId?.let { body.put("songId", it) }
                 connection.outputStream.use { it.write(body.toString().toByteArray()) }
-                connection.responseCode
+                val status = connection.responseCode
                 connection.disconnect()
+                status in 200..299 || status == 404
+            }.getOrDefault(false)
+            if (kind != "play") return@execute
+            if (sent) {
+                OfflinePlays.send(this)
+            } else {
+                OfflinePlays.add(this, track, playedAt)
             }
         }
     }
@@ -159,6 +181,7 @@ class PlaybackService : MediaSessionService() {
         val state: PageState,
         val server: String,
         val token: String,
+        val fromPage: Boolean,
     ) : Player.Listener {
         var live = false
         private var heard = 0.0
@@ -178,7 +201,7 @@ class PlaybackService : MediaSessionService() {
             if (!isPlaying || live) return
             live = true
             session.player = player
-            Playback.runInPage?.invoke(Bridge.command("pause"))
+            if (fromPage) Playback.runInPage?.invoke(Bridge.command("pause"))
             announce()
             main.post(tick)
         }
@@ -192,7 +215,7 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            if (!live) giveUp(this)
+            if (!live && fromPage) giveUp(this)
         }
 
         private fun announce() {
@@ -228,5 +251,6 @@ class PlaybackService : MediaSessionService() {
     private companion object {
         const val TICK_MS = 1000L
         const val TAKE_OVER_WITHIN_MS = 12_000L
+        const val OFFLINE = "https://offline.invalid"
     }
 }

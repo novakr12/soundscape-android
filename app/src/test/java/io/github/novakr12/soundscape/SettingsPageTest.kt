@@ -14,9 +14,10 @@ class SettingsPageTest {
             """{"page":"123","commands":[
                 {"do":"option","name":"background_playback","value":false},
                 {"do":"option","name":"notifications","value":true},
+                {"do":"option","name":"downloads_wifi_only","value":true},
                 {"do":"option","name":"scrobbling","value":true},
                 {"do":"option","name":"notifications","value":"yes"},
-                {"do":"connect"},{"do":"disconnect"},{"do":"change-server"},{"do":"notification-settings"},
+                {"do":"connect"},{"do":"disconnect"},{"do":"change-server"},{"do":"notification-settings"},{"do":"open-downloads"},
                 {"do":"sign-out"},"connect"
             ]}""",
         )!!
@@ -25,10 +26,12 @@ class SettingsPageTest {
             listOf(
                 SettingsCommand.Option("background_playback", false),
                 SettingsCommand.Option("notifications", true),
+                SettingsCommand.Option("downloads_wifi_only", true),
                 SettingsCommand.Connect,
                 SettingsCommand.Disconnect,
                 SettingsCommand.ChangeServer,
                 SettingsCommand.NotificationSettings,
+                SettingsCommand.OpenDownloads,
             ),
             ask.commands,
         )
@@ -52,7 +55,7 @@ class SettingsPageTest {
     fun describesItselfAsTheAndroidApp() {
         val payload = JSONObject(
             SettingsPage.payload(
-                AppSettingsView("0.4.0", true, "ana", true, false, true),
+                AppSettingsView("0.4.0", true, "ana", true, false, true, true, "3 songs · 20 MB"),
                 null,
             ),
         )
@@ -63,6 +66,8 @@ class SettingsPageTest {
         assertTrue(settings.getBoolean("background_playback"))
         assertFalse(settings.getBoolean("notifications"))
         assertTrue(payload.isNull("error"))
+        assertTrue(settings.getBoolean("downloads_wifi_only"))
+        assertEquals("3 songs · 20 MB", settings.getString("downloads"))
         assertTrue(JSONObject(SettingsPage.payload(AppSettingsView("1", false, null, true, true, true), "x")).getJSONObject("settings").isNull("user"))
     }
 

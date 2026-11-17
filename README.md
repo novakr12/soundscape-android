@@ -30,6 +30,14 @@ If the server can't be reached, the app shows a page with **Try again** and **Ch
 - While music plays, the usual media notification, the lock screen, Bluetooth and headset buttons control Soundscape's player
 - When you leave the app or lock the screen, Android's own media player takes over from the same song and second, so playback keeps going reliably: it pauses for calls and other apps, stops when headphones are unplugged, plays albums without gaps, and carries on through the queue. Plays still count, the same way as in the page. When you come back, the page takes over again where Android's player is. This needs the app to be connected (see above); without it, the page keeps playing in the background on its own, as in Chrome.
 
+## Downloads
+
+Albums and playlists get a **Download** button in the app (in Soundscape's Music tab and on album pages), once the app is connected. The songs are saved in the app's own storage, with a progress notification, and continue after a lost connection or a restart. **Download only on Wi-Fi** holds them until you're on Wi-Fi.
+
+Downloaded songs play from the phone: they don't use mobile data when you're online, and they play with no connection at all. Without a connection Soundscape's pages can't load, so the app has its own **Downloads** screen: long-press the icon and choose **Downloads**, press **Play downloads** on the "Can't reach your server" page, or **Manage downloads** under This app. It lists what's stored by album, with the space used, and plays or removes albums or single songs.
+
+Songs you play offline still count: the app remembers each play with its time and sends them to Soundscape when it's back online.
+
 ## Notifications
 
 Once the app is connected, it checks Soundscape for new notifications every 15 minutes, the most often Android lets apps check in the background, and only when the phone is online: new followers, someone passing you on the leaderboard, milestones and new releases from artists you play. Tapping one opens its page in the app. The first check after connecting only notes where things stand, so you don't get a flood of old ones, and more than three at once fold into one "more notifications" line.
@@ -38,9 +46,8 @@ Turn them off under **This app** on Soundscape's Settings page, or in Android's 
 
 ## What's coming
 
-1. Downloads, to keep albums and playlists on the phone and play them offline
-2. Android Auto
-3. Google Play
+1. Android Auto
+2. F-Droid and Google Play
 
 ## Build
 

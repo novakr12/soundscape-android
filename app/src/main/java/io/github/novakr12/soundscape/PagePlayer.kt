@@ -94,7 +94,7 @@ class PagePlayer(looper: Looper, private val send: (String) -> Unit) : SimpleBas
     }
 
     companion object {
-        fun mediaItemFor(server: String, track: BridgeTrack, stream: String? = null): MediaItem {
+        fun mediaItemFor(server: String, track: BridgeTrack, stream: String? = null, cacheKey: String? = null): MediaItem {
             val metadata = MediaMetadata.Builder()
                 .setTitle(track.title)
                 .setArtist(track.artist)
@@ -105,6 +105,7 @@ class PagePlayer(looper: Looper, private val send: (String) -> Unit) : SimpleBas
                 .build()
             val builder = MediaItem.Builder().setMediaId(track.trackId).setMediaMetadata(metadata)
             if (stream != null) builder.setUri(stream)
+            if (cacheKey != null) builder.setCustomCacheKey(cacheKey)
             return builder.build()
         }
     }

@@ -43,6 +43,12 @@
             android:text="@string/retry" />
 
         <Button
+            android:id="@+id/play_downloads"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/downloads_play_offline" />
+
+        <Button
             android:id="@+id/change_server"
             style="?android:attr/borderlessButtonStyle"
             android:layout_width="wrap_content"

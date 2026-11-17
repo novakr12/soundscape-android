@@ -8,6 +8,7 @@ sealed class SettingsCommand {
     data object Disconnect : SettingsCommand()
     data object ChangeServer : SettingsCommand()
     data object NotificationSettings : SettingsCommand()
+    data object OpenDownloads : SettingsCommand()
 }
 
 data class SettingsAsk(val page: String, val commands: List<SettingsCommand>)
@@ -19,11 +20,14 @@ data class AppSettingsView(
     val backgroundPlayback: Boolean,
     val notifications: Boolean,
     val notificationsAllowed: Boolean,
+    val downloadsWifiOnly: Boolean = false,
+    val downloads: String? = null,
 )
 
 object SettingsPage {
     const val OPTION_BACKGROUND = "background_playback"
     const val OPTION_NOTIFICATIONS = "notifications"
+    const val OPTION_WIFI = "downloads_wifi_only"
     private const val MOST_AT_ONCE = 20
 
     const val READ = """(() => {
@@ -44,7 +48,7 @@ object SettingsPage {
                 "option" -> {
                     val name = item.optString("name")
                     val value = item.opt("value")
-                    if ((name == OPTION_BACKGROUND || name == OPTION_NOTIFICATIONS) && value is Boolean) {
+                    if ((name == OPTION_BACKGROUND || name == OPTION_NOTIFICATIONS || name == OPTION_WIFI) && value is Boolean) {
                         SettingsCommand.Option(name, value)
                     } else {
                         null
@@ -54,6 +58,7 @@ object SettingsPage {
                 "disconnect" -> SettingsCommand.Disconnect
                 "change-server" -> SettingsCommand.ChangeServer
                 "notification-settings" -> SettingsCommand.NotificationSettings
+                "open-downloads" -> SettingsCommand.OpenDownloads
                 else -> null
             }
         }
@@ -70,7 +75,9 @@ object SettingsPage {
                 .put("user", view.user ?: JSONObject.NULL)
                 .put(OPTION_BACKGROUND, view.backgroundPlayback)
                 .put(OPTION_NOTIFICATIONS, view.notifications)
-                .put("notifications_allowed", view.notificationsAllowed),
+                .put("notifications_allowed", view.notificationsAllowed)
+                .put(OPTION_WIFI, view.downloadsWifiOnly)
+                .put("downloads", view.downloads ?: JSONObject.NULL),
         )
         .put("error", error ?: JSONObject.NULL)
         .toString()

@@ -51,6 +51,7 @@ class MainActivity : AppCompatActivity() {
     private var visible = false
     private var pagePlaying = false
     private var settingsShown: Pair<String, String>? = null
+    private var downloadsShown: Pair<String, String>? = null
     private val worker = Executors.newSingleThreadExecutor()
     private val tick = object : Runnable {
         override fun run() {
@@ -93,6 +94,9 @@ class MainActivity : AppCompatActivity() {
             trouble.visibility = View.GONE
             web.reload()
         }
+        findViewById<Button>(R.id.play_downloads).setOnClickListener {
+            startActivity(Intent(this, DownloadsActivity::class.java))
+        }
         findViewById<Button>(R.id.change_server).setOnClickListener {
             startActivity(Intent(this, SetupActivity::class.java))
         }
@@ -106,6 +110,8 @@ class MainActivity : AppCompatActivity() {
             followSoon()
         }
         if (Settings(this).token != null) NoticeWorker.start(this)
+        val app = applicationContext
+        worker.execute { OfflinePlays.send(app) }
         if (savedInstanceState == null || web.restoreState(savedInstanceState) == null) {
             web.loadUrl(firstPage(intent))
         }
@@ -145,11 +151,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun followPage() {
         if (!::web.isInitialized) return
-        if (visible) followSettingsPage()
+        if (visible) {
+            followSettingsPage()
+            followDownloads()
+        }
         val service = Playback.service
         if (service?.playingNatively == true) {
             pagePlaying = false
-            if (visible) handBackToPage(service)
+            if (visible && service.playingForPage) handBackToPage(service)
             return
         }
         web.evaluateJavascript(Bridge.READ) { result ->
@@ -188,6 +197,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun followDownloads() {
+        web.evaluateJavascript(DownloadData.read()) { result ->
+            val ask = DownloadData.parse(result) ?: return@evaluateJavascript
+            for (request in ask.requests) {
+                when (request.kind) {
+                    "download" -> if (Settings(this).token == null) {
+                        Toast.makeText(this, R.string.downloads_connect_first, Toast.LENGTH_LONG).show()
+                    } else {
+                        Downloads.add(this, server, request.tracks)
+                    }
+                    "remove" -> Downloads.remove(this, request.trackIds)
+                }
+            }
+            val push = DownloadData.push(BuildConfig.VERSION_NAME, Downloads.states(this))
+            if (ask.requests.isEmpty() && downloadsShown == ask.page to push) return@evaluateJavascript
+            downloadsShown = ask.page to push
+            web.evaluateJavascript(push, null)
+        }
+    }
+
     private fun followSettingsPage() {
         web.evaluateJavascript(SettingsPage.READ) { result ->
             val ask = SettingsPage.parse(result)
@@ -213,6 +242,8 @@ class MainActivity : AppCompatActivity() {
             backgroundPlayback = settings.backgroundPlayback,
             notifications = settings.notifications,
             notificationsAllowed = NoticeWorker.allowed(this),
+            downloadsWifiOnly = settings.downloadsWifiOnly,
+            downloads = Downloads.summary(this),
         )
     }
 
@@ -221,6 +252,7 @@ class MainActivity : AppCompatActivity() {
         when (command) {
             is SettingsCommand.Option -> when (command.name) {
                 SettingsPage.OPTION_BACKGROUND -> settings.backgroundPlayback = command.value
+                SettingsPage.OPTION_WIFI -> Downloads.setWifiOnly(this, command.value)
                 SettingsPage.OPTION_NOTIFICATIONS -> {
                     settings.notifications = command.value
                     if (!command.value) {
@@ -234,6 +266,7 @@ class MainActivity : AppCompatActivity() {
             SettingsCommand.Connect -> web.loadUrl(Bridge.connectAddress(server, "Android (${Build.MODEL})"))
             SettingsCommand.Disconnect -> disconnect()
             SettingsCommand.ChangeServer -> startActivity(Intent(this, SetupActivity::class.java))
+            SettingsCommand.OpenDownloads -> startActivity(Intent(this, DownloadsActivity::class.java))
             SettingsCommand.NotificationSettings -> {
                 val open = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                     .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
