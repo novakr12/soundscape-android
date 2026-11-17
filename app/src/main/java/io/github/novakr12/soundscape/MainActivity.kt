@@ -3,10 +3,14 @@ package io.github.novakr12.soundscape
 import android.annotation.SuppressLint
 import android.app.DownloadManager
 import android.content.ActivityNotFoundException
+import android.content.ComponentName
 import android.content.Intent
 import android.content.res.Configuration
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.Environment
 import android.view.View
 import android.webkit.CookieManager
@@ -29,12 +33,24 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
 
 class MainActivity : AppCompatActivity() {
     private lateinit var web: WebView
     private lateinit var trouble: View
     private lateinit var server: String
     private var picking: ValueCallback<Array<Uri>>? = null
+    private val main = Handler(Looper.getMainLooper())
+    private var controller: ListenableFuture<MediaController>? = null
+    private var visible = false
+    private val tick = object : Runnable {
+        override fun run() {
+            followPage()
+            if (visible) main.postDelayed(this, PAGE_TICK_MS)
+        }
+    }
 
     private val pickFiles = registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { chosen ->
         picking?.onReceiveValue(chosen.toTypedArray())
@@ -76,9 +92,76 @@ class MainActivity : AppCompatActivity() {
                 if (web.canGoBack()) web.goBack() else moveTaskToBack(true)
             }
         })
+        Playback.runInPage = { script -> web.evaluateJavascript(script, null) }
         if (savedInstanceState == null || web.restoreState(savedInstanceState) == null) {
-            web.loadUrl(server)
+            web.loadUrl(firstPage(intent))
         }
+    }
+
+    private fun firstPage(intent: Intent?): String {
+        val settings = Settings(this)
+        val asked = intent?.action == ACTION_CONNECT
+        if (asked || (settings.token == null && !settings.askedToConnect)) {
+            settings.askedToConnect = true
+            return Bridge.connectAddress(server, "Android (${Build.MODEL})")
+        }
+        return server
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.action == ACTION_CONNECT && ::web.isInitialized) web.loadUrl(firstPage(intent))
+    }
+
+    override fun onStart() {
+        super.onStart()
+        visible = true
+        main.removeCallbacks(tick)
+        main.post(tick)
+    }
+
+    override fun onStop() {
+        visible = false
+        main.removeCallbacks(tick)
+        handOverToPhone()
+        super.onStop()
+    }
+
+    private fun followPage() {
+        if (!::web.isInitialized) return
+        val service = Playback.service
+        if (service?.playingNatively == true) {
+            handBackToPage(service)
+            return
+        }
+        web.evaluateJavascript(Bridge.READ) { result ->
+            val state = Bridge.parse(result)
+            Playback.service?.showPage(state, server)
+            if (state?.playing == true) connectToService()
+        }
+    }
+
+    private fun handBackToPage(service: PlaybackService) {
+        val back = service.handBackState() ?: return
+        web.evaluateJavascript(Bridge.handBack(back)) { result ->
+            if (result == "true") service.finishHandBack()
+        }
+    }
+
+    private fun handOverToPhone() {
+        val token = Settings(this).token ?: return
+        val service = Playback.service ?: return
+        if (service.playingNatively || !::web.isInitialized) return
+        web.evaluateJavascript(Bridge.READ) { result ->
+            val state = Bridge.parse(result) ?: return@evaluateJavascript
+            if (state.playing && !visible) service.takeOver(state, server, token)
+        }
+    }
+
+    private fun connectToService() {
+        if (controller != null) return
+        controller = MediaController.Builder(this, SessionToken(this, ComponentName(this, PlaybackService::class.java)))
+            .buildAsync()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -94,6 +177,15 @@ class MainActivity : AppCompatActivity() {
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val address = request.url.toString()
+                Bridge.readToken(server, address)?.let { (token, user) ->
+                    Settings(this@MainActivity).apply {
+                        this.token = token
+                        this.user = user
+                    }
+                    Toast.makeText(this@MainActivity, R.string.connected, Toast.LENGTH_SHORT).show()
+                    view.loadUrl(server)
+                    return true
+                }
                 if (Server.isOwnPage(server, address)) return false
                 openOutside(request.url)
                 return true
@@ -189,7 +281,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        main.removeCallbacks(tick)
+        Playback.runInPage = null
+        Playback.service?.let { if (!it.playingNatively) it.showPage(null, server) }
+        controller?.let { MediaController.releaseFuture(it) }
+        controller = null
         if (::web.isInitialized) web.destroy()
         super.onDestroy()
+    }
+
+    private companion object {
+        const val PAGE_TICK_MS = 1000L
+        const val ACTION_CONNECT = "io.github.novakr12.soundscape.CONNECT"
     }
 }

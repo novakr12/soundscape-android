@@ -42,7 +42,9 @@ class SetupActivity : AppCompatActivity() {
                     runOnUiThread {
                         connect.isEnabled = true
                         if (problem == null) {
-                            Settings(this).server = server
+                            val settings = Settings(this)
+                            if (settings.server != server) settings.forgetConnection()
+                            settings.server = server
                             startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP))
                             finish()
                         } else {

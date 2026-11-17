@@ -12,6 +12,8 @@ The app needs Android 8.0 or newer.
 
 Type the address you open Soundscape at, for example `music.example.com`. The app adds `https://` when you leave it out, checks that a Soundscape server answers there, and remembers it. Then log in as you would in a browser.
 
+Right after logging in the first time, Soundscape asks whether to connect the app. Connecting gives the app its own token, so it can keep your music playing when you leave it (see below). You can see and revoke the token on Soundscape's Connect page. If you skip it, long-press the app icon and choose **Background playback** to connect later.
+
 To switch servers later, long-press the app icon and choose **Change server**. When the server can't be reached, the app shows a page with **Try again** and **Change server** too.
 
 ## What it does now
@@ -19,14 +21,14 @@ To switch servers later, long-press the app icon and choose **Change server**. W
 - Your Soundscape pages, full screen, with the phone's back button going back a page
 - Links to other sites (MusicBrainz, Wikipedia, Last.fm…) open in your browser
 - Imports can pick files from the phone, and exports download to the Downloads folder
-- The player keeps playing when you switch apps, with lock-screen controls, as in Chrome
+- While music plays, the usual media notification, the lock screen, Bluetooth and headset buttons control Soundscape's player
+- When you leave the app or lock the screen, Android's own media player takes over from the same song and second, so playback keeps going reliably: it pauses for calls and other apps, stops when headphones are unplugged, plays albums without gaps, and carries on through the queue. Plays still count, the same way as in the page. When you come back, the page takes over again where Android's player is. This needs the app to be connected (see above); without it, the page keeps playing in the background on its own, as in Chrome.
 
 ## What's coming
 
-1. Playback through Android's own media player, so music keeps going reliably in the background and with Bluetooth and headset buttons
-2. Downloads, to keep albums and playlists on the phone and play them offline
-3. Android Auto
-4. Google Play
+1. Downloads, to keep albums and playlists on the phone and play them offline
+2. Android Auto
+3. Google Play
 
 ## Build
 

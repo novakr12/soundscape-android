@@ -10,4 +10,14 @@
             android:targetClass="io.github.novakr12.soundscape.SetupActivity"
             android:targetPackage="io.github.novakr12.soundscape" />
     </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="connect"
+        android:shortcutShortLabel="@string/shortcut_connect">
+        <intent
+            android:action="io.github.novakr12.soundscape.CONNECT"
+            android:targetClass="io.github.novakr12.soundscape.MainActivity"
+            android:targetPackage="io.github.novakr12.soundscape" />
+    </shortcut>
 </shortcuts>
