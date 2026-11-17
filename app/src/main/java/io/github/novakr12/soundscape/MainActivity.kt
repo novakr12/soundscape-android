@@ -1,5 +1,6 @@
 package io.github.novakr12.soundscape
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.DownloadManager
 import android.content.ActivityNotFoundException
@@ -52,6 +53,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val askToNotify = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+
     private val pickFiles = registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { chosen ->
         picking?.onReceiveValue(chosen.toTypedArray())
         picking = null
@@ -93,6 +96,7 @@ class MainActivity : AppCompatActivity() {
             }
         })
         Playback.runInPage = { script -> web.evaluateJavascript(script, null) }
+        if (Settings(this).token != null) NoticeWorker.start(this)
         if (savedInstanceState == null || web.restoreState(savedInstanceState) == null) {
             web.loadUrl(firstPage(intent))
         }
@@ -100,6 +104,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun firstPage(intent: Intent?): String {
         val settings = Settings(this)
+        val page = intent?.takeIf { it.action == ACTION_OPEN }?.getStringExtra(EXTRA_PAGE)
+        if (page != null && page.startsWith("/") && !page.startsWith("//")) return "$server$page"
         val asked = intent?.action == ACTION_CONNECT
         if (asked || (settings.token == null && !settings.askedToConnect)) {
             settings.askedToConnect = true
@@ -110,7 +116,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (intent.action == ACTION_CONNECT && ::web.isInitialized) web.loadUrl(firstPage(intent))
+        if ((intent.action == ACTION_CONNECT || intent.action == ACTION_OPEN) && ::web.isInitialized) {
+            web.loadUrl(firstPage(intent))
+        }
     }
 
     override fun onStart() {
@@ -158,6 +166,18 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun startNotifications() {
+        NoticeWorker.start(this)
+        NoticeWorker.checkNow(this)
+        val settings = Settings(this)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !NoticeWorker.allowed(this) &&
+            !settings.askedForNotifications
+        ) {
+            settings.askedForNotifications = true
+            askToNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     private fun connectToService() {
         if (controller != null) return
         controller = MediaController.Builder(this, SessionToken(this, ComponentName(this, PlaybackService::class.java)))
@@ -181,7 +201,9 @@ class MainActivity : AppCompatActivity() {
                     Settings(this@MainActivity).apply {
                         this.token = token
                         this.user = user
+                        lastNotification = null
                     }
+                    startNotifications()
                     Toast.makeText(this@MainActivity, R.string.connected, Toast.LENGTH_SHORT).show()
                     view.loadUrl(server)
                     return true
@@ -290,8 +312,10 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    private companion object {
-        const val PAGE_TICK_MS = 1000L
-        const val ACTION_CONNECT = "io.github.novakr12.soundscape.CONNECT"
+    companion object {
+        const val ACTION_OPEN = "io.github.novakr12.soundscape.OPEN"
+        const val EXTRA_PAGE = "page"
+        private const val PAGE_TICK_MS = 1000L
+        private const val ACTION_CONNECT = "io.github.novakr12.soundscape.CONNECT"
     }
 }

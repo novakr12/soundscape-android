@@ -18,6 +18,18 @@ class Settings(context: Context) {
         get() = stored.getString(USER, null)
         set(value) = stored.edit { putString(USER, value) }
 
+    var notifications: Boolean
+        get() = stored.getBoolean(NOTIFICATIONS, true)
+        set(value) = stored.edit { putBoolean(NOTIFICATIONS, value) }
+
+    var lastNotification: Long?
+        get() = if (stored.contains(LAST_NOTIFICATION)) stored.getLong(LAST_NOTIFICATION, 0) else null
+        set(value) = stored.edit { if (value == null) remove(LAST_NOTIFICATION) else putLong(LAST_NOTIFICATION, value) }
+
+    var askedForNotifications: Boolean
+        get() = stored.getBoolean(ASKED_NOTIFICATIONS, false)
+        set(value) = stored.edit { putBoolean(ASKED_NOTIFICATIONS, value) }
+
     var askedToConnect: Boolean
         get() = stored.getBoolean(ASKED, false)
         set(value) = stored.edit { putBoolean(ASKED, value) }
@@ -26,6 +38,7 @@ class Settings(context: Context) {
         remove(TOKEN)
         remove(USER)
         remove(ASKED)
+        remove(LAST_NOTIFICATION)
     }
 
     private companion object {
@@ -33,5 +46,8 @@ class Settings(context: Context) {
         const val TOKEN = "token"
         const val USER = "user"
         const val ASKED = "asked_to_connect"
+        const val NOTIFICATIONS = "notifications"
+        const val LAST_NOTIFICATION = "last_notification"
+        const val ASKED_NOTIFICATIONS = "asked_for_notifications"
     }
 }

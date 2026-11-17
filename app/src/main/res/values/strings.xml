@@ -17,5 +17,6 @@
     <string name="no_app_for_link">No app on this phone can open that link.</string>
     <string name="shortcut_change_server">Change server</string>
     <string name="shortcut_connect">Background playback</string>
+    <string name="notifications_channel">Followers, milestones and new releases</string>
     <string name="connected">Connected. Music keeps playing when you leave the app.</string>
 </resources>

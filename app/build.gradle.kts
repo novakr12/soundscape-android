@@ -12,8 +12,8 @@ android {
         applicationId = "io.github.novakr12.soundscape"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
     }
 
     signingConfigs {
@@ -59,6 +59,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.11.1")
     implementation("androidx.media3:media3-session:1.11.1")
     implementation("androidx.media3:media3-datasource:1.11.1")
+    implementation("androidx.work:work-runtime:2.12.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20260814")
 }
