@@ -13,7 +13,12 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 
 @OptIn(UnstableApi::class)
-class PagePlayer(looper: Looper, private val send: (String) -> Unit) : SimpleBasePlayer(looper) {
+class PagePlayer(
+    looper: Looper,
+    private val send: (String) -> Unit,
+    private val busy: () -> Boolean,
+    private val onItems: (List<MediaItem>, Int, Long) -> Unit,
+) : SimpleBasePlayer(looper) {
     private var page: PageState? = null
     private var server = ""
 
@@ -37,6 +42,9 @@ class PagePlayer(looper: Looper, private val send: (String) -> Unit) : SimpleBas
                 Player.COMMAND_GET_CURRENT_MEDIA_ITEM,
                 Player.COMMAND_GET_TIMELINE,
                 Player.COMMAND_GET_METADATA,
+                Player.COMMAND_SET_MEDIA_ITEM,
+                Player.COMMAND_CHANGE_MEDIA_ITEMS,
+                Player.COMMAND_PREPARE,
             )
             .build()
         val state = page
@@ -69,7 +77,33 @@ class PagePlayer(looper: Looper, private val send: (String) -> Unit) : SimpleBas
             .build()
     }
 
+    override fun handleSetMediaItems(
+        mediaItems: MutableList<MediaItem>,
+        startIndex: Int,
+        startPositionMs: Long,
+    ): ListenableFuture<*> {
+        onItems(mediaItems, startIndex, if (startPositionMs == C.TIME_UNSET) 0 else startPositionMs)
+        return Futures.immediateVoidFuture()
+    }
+
+    override fun handlePrepare(): ListenableFuture<*> = Futures.immediateVoidFuture()
+
+    override fun handleAddMediaItems(index: Int, mediaItems: MutableList<MediaItem>): ListenableFuture<*> =
+        Futures.immediateVoidFuture()
+
+    override fun handleRemoveMediaItems(fromIndex: Int, toIndex: Int): ListenableFuture<*> = Futures.immediateVoidFuture()
+
+    override fun handleMoveMediaItems(fromIndex: Int, toIndex: Int, newIndex: Int): ListenableFuture<*> =
+        Futures.immediateVoidFuture()
+
+    override fun handleReplaceMediaItems(
+        fromIndex: Int,
+        toIndex: Int,
+        mediaItems: MutableList<MediaItem>,
+    ): ListenableFuture<*> = Futures.immediateVoidFuture()
+
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
+        if (busy()) return Futures.immediateVoidFuture()
         send(Bridge.command(if (playWhenReady) "play" else "pause"))
         page = page?.copy(playing = playWhenReady)
         return Futures.immediateVoidFuture()

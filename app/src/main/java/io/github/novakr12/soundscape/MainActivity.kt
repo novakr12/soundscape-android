@@ -3,6 +3,7 @@ package io.github.novakr12.soundscape
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.DownloadManager
+import android.app.SearchManager
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Intent
@@ -12,6 +13,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
 import android.os.Environment
 import android.view.View
 import android.webkit.CookieManager
@@ -133,6 +135,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun firstPage(intent: Intent?): String {
         val settings = Settings(this)
+        if (intent?.action == MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH) {
+            val query = intent.getStringExtra(SearchManager.QUERY)?.trim().orEmpty()
+            return if (query.isEmpty()) "$server/music" else "$server/music?q=${Uri.encode(query)}"
+        }
         val page = intent?.takeIf { it.action == ACTION_OPEN }?.getStringExtra(EXTRA_PAGE)
         if (page != null && page.startsWith("/") && !page.startsWith("//")) return "$server$page"
         val asked = intent?.action == ACTION_CONNECT
@@ -145,7 +151,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if ((intent.action == ACTION_CONNECT || intent.action == ACTION_OPEN) && ::web.isInitialized) {
+        val known = intent.action == ACTION_CONNECT || intent.action == ACTION_OPEN ||
+            intent.action == MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH
+        if (known && ::web.isInitialized) {
             web.loadUrl(firstPage(intent))
         }
     }

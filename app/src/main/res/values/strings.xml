@@ -33,6 +33,13 @@
     <string name="downloads_waiting">waiting · %1$d%%</string>
     <string name="downloads_play_offline">Play downloads</string>
     <string name="downloads_connect_first">Connect the app first (Settings → This app), then download.</string>
+    <string name="car_new_albums">New albums</string>
+    <string name="car_playlists">Playlists</string>
+    <string name="car_shuffle">Shuffle</string>
+    <string name="car_downloads">Downloads</string>
+    <string name="car_connect_first">Open Soundscape on your phone and connect the app first.</string>
+    <string name="car_no_navidrome">Connect Navidrome on Soundscape\'s Connect page to play your library here.</string>
+    <string name="car_offline">Soundscape can\'t be reached right now. Your downloads still play.</string>
     <string name="recap_title">Your week in music</string>
     <string name="update_title">Soundscape %1$s is out</string>
     <string name="update_body">You have %1$s. Tap to download the new version.</string>

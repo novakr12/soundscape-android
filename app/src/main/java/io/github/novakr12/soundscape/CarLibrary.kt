@@ -1,0 +1,318 @@
+package io.github.novakr12.soundscape
+
+import android.content.Context
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import androidx.annotation.OptIn
+import androidx.core.net.toUri
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaConstants
+import androidx.media3.session.MediaLibraryService.LibraryParams
+import androidx.media3.session.MediaLibraryService.MediaLibrarySession
+import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionError
+import com.google.common.collect.ImmutableList
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.MoreExecutors
+import com.google.common.util.concurrent.SettableFuture
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+
+@OptIn(UnstableApi::class)
+class CarLibrary(private val context: Context) : MediaLibrarySession.Callback {
+    private val pool = MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(2))
+    private val resolver = Executors.newSingleThreadExecutor()
+    private val main = Handler(Looper.getMainLooper())
+    private val pages = ConcurrentHashMap<String, Pair<Long, CarPage>>()
+
+    private sealed class Loaded {
+        data class Page(val page: CarPage) : Loaded()
+        data class Failed(val error: SessionError) : Loaded()
+    }
+
+    fun release() {
+        pool.shutdownNow()
+        resolver.shutdownNow()
+    }
+
+    override fun onGetLibraryRoot(
+        session: MediaLibrarySession,
+        browser: MediaSession.ControllerInfo,
+        params: LibraryParams?,
+    ): ListenableFuture<LibraryResult<MediaItem>> {
+        val extras = Bundle().apply {
+            putInt(MediaConstants.EXTRAS_KEY_CONTENT_STYLE_BROWSABLE, MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_GRID_ITEM)
+            putInt(MediaConstants.EXTRAS_KEY_CONTENT_STYLE_PLAYABLE, MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM)
+            putBoolean(SEARCH_SUPPORTED, true)
+        }
+        val root = MediaItem.Builder()
+            .setMediaId(Car.ROOT)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(context.getString(R.string.app_name))
+                    .setIsBrowsable(true)
+                    .setIsPlayable(false)
+                    .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_MIXED)
+                    .build(),
+            )
+            .build()
+        return Futures.immediateFuture(LibraryResult.ofItem(root, LibraryParams.Builder().setExtras(extras).build()))
+    }
+
+    override fun onGetChildren(
+        session: MediaLibrarySession,
+        browser: MediaSession.ControllerInfo,
+        parentId: String,
+        page: Int,
+        pageSize: Int,
+        params: LibraryParams?,
+    ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+        if (parentId == Car.ROOT) return Futures.immediateFuture(LibraryResult.ofItemList(tabs(), params))
+        return Futures.transform(load(parentId), { loaded -> listed(parentId, loaded, page, pageSize, params) }, pool)
+    }
+
+    override fun onGetItem(
+        session: MediaLibrarySession,
+        browser: MediaSession.ControllerInfo,
+        mediaId: String,
+    ): ListenableFuture<LibraryResult<MediaItem>> {
+        val (parent, index) = Car.readSongId(mediaId)
+            ?: return Futures.immediateFuture(LibraryResult.ofError(SessionError(SessionError.ERROR_BAD_VALUE, "")))
+        return Futures.transform(load(parent), { loaded ->
+            val track = (loaded as? Loaded.Page)?.page?.songs?.getOrNull(index)
+            if (track == null) {
+                LibraryResult.ofError(SessionError(SessionError.ERROR_BAD_VALUE, ""))
+            } else {
+                LibraryResult.ofItem(browsableSong(parent, index, track), null)
+            }
+        }, pool)
+    }
+
+    override fun onSearch(
+        session: MediaLibrarySession,
+        browser: MediaSession.ControllerInfo,
+        query: String,
+        params: LibraryParams?,
+    ): ListenableFuture<LibraryResult<Void>> {
+        val node = Car.searchNode(query)
+        return Futures.transform(load(node, fresh = true), { loaded ->
+            val count = (loaded as? Loaded.Page)?.page?.songs?.size ?: 0
+            main.post { session.notifySearchResultChanged(browser, query, count, params) }
+            LibraryResult.ofVoid()
+        }, pool)
+    }
+
+    override fun onGetSearchResult(
+        session: MediaLibrarySession,
+        browser: MediaSession.ControllerInfo,
+        query: String,
+        page: Int,
+        pageSize: Int,
+        params: LibraryParams?,
+    ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+        val node = Car.searchNode(query)
+        return Futures.transform(load(node), { loaded -> listed(node, loaded, page, pageSize, params) }, pool)
+    }
+
+    override fun onAddMediaItems(
+        mediaSession: MediaSession,
+        controller: MediaSession.ControllerInfo,
+        mediaItems: MutableList<MediaItem>,
+    ): ListenableFuture<MutableList<MediaItem>> {
+        val future = SettableFuture.create<MutableList<MediaItem>>()
+        resolver.execute {
+            val resolved = mediaItems.flatMap { item -> resolve(item)?.let { it.first.subList(it.second, it.second + 1) } ?: emptyList() }
+            future.set(playable(resolved).toMutableList())
+        }
+        return future
+    }
+
+    override fun onSetMediaItems(
+        mediaSession: MediaSession,
+        controller: MediaSession.ControllerInfo,
+        mediaItems: MutableList<MediaItem>,
+        startIndex: Int,
+        startPositionMs: Long,
+    ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+        val future = SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
+        resolver.execute {
+            val single = mediaItems.singleOrNull()?.let { resolve(it) }
+            val (tracks, start) = single ?: (
+                mediaItems.mapNotNull { Car.trackFrom(it.mediaMetadata.extras?.getString(TRACK)) } to
+                    startIndex.coerceAtLeast(0)
+                )
+            if (tracks.isEmpty() || start !in tracks.indices) {
+                future.setException(IllegalArgumentException("Nothing to play"))
+            } else {
+                val position = if (single != null) 0L else startPositionMs.coerceAtLeast(0)
+                future.set(MediaSession.MediaItemsWithStartPosition(playable(tracks), start, position))
+            }
+        }
+        return future
+    }
+
+    private fun resolve(item: MediaItem): Pair<List<BridgeTrack>, Int>? {
+        Car.trackFrom(item.mediaMetadata.extras?.getString(TRACK))?.let { track ->
+            Car.readSongId(item.mediaId)?.let { (parent, index) ->
+                val songs = (load(parent).get() as? Loaded.Page)?.page?.songs
+                if (songs != null && index in songs.indices) return songs to index
+            }
+            return listOf(track) to 0
+        }
+        Car.readSongId(item.mediaId)?.let { (parent, index) ->
+            val songs = (load(parent).get() as? Loaded.Page)?.page?.songs ?: return null
+            return if (index in songs.indices) songs to index else null
+        }
+        if (Car.isPlayableFolder(item.mediaId)) {
+            val songs = (load(item.mediaId, fresh = item.mediaId == Car.SHUFFLE).get() as? Loaded.Page)?.page?.songs
+            return songs?.takeIf { it.isNotEmpty() }?.let { it to 0 }
+        }
+        val query = item.requestMetadata.searchQuery?.trim()
+        if (query != null) {
+            val node = if (query.isEmpty()) Car.SHUFFLE else Car.searchNode(query)
+            val songs = (load(node, fresh = true).get() as? Loaded.Page)?.page?.songs
+            return songs?.takeIf { it.isNotEmpty() }?.let { it to 0 }
+        }
+        return null
+    }
+
+    private fun playable(tracks: List<BridgeTrack>): List<MediaItem> {
+        val server = Settings(context).server ?: OFFLINE
+        return tracks.map { playableItem(context, server, it) }
+    }
+
+    private fun listed(
+        parent: String,
+        loaded: Loaded,
+        page: Int,
+        pageSize: Int,
+        params: LibraryParams?,
+    ): LibraryResult<ImmutableList<MediaItem>> {
+        val shown = when (loaded) {
+            is Loaded.Failed -> return LibraryResult.ofError(loaded.error)
+            is Loaded.Page -> loaded.page
+        }
+        var songIndex = 0
+        val items = shown.items.map { entry ->
+            when (entry) {
+                is CarEntry.Folder -> folder(entry)
+                is CarEntry.Song -> browsableSong(parent, songIndex++, entry.track)
+            }
+        }
+        val from = (page.coerceAtLeast(0).toLong() * pageSize.coerceAtLeast(1)).coerceAtMost(items.size.toLong()).toInt()
+        val to = (from + pageSize.coerceAtLeast(1)).coerceAtMost(items.size)
+        return LibraryResult.ofItemList(ImmutableList.copyOf(items.subList(from, to)), params)
+    }
+
+    private fun load(node: String, fresh: Boolean = false): ListenableFuture<Loaded> {
+        if (node == Car.DOWNLOADS) {
+            val future = SettableFuture.create<Loaded>()
+            main.post {
+                val songs = Downloads.playable(context).map { CarEntry.Song(it) }
+                future.set(Loaded.Page(CarPage(true, context.getString(R.string.car_downloads), songs)))
+            }
+            return future
+        }
+        val now = System.currentTimeMillis()
+        if (!fresh) {
+            pages[node]?.takeIf { now - it.first < KEEP_MS }?.let { return Futures.immediateFuture(Loaded.Page(it.second)) }
+        }
+        return pool.submit<Loaded> { fetch(node, now) }
+    }
+
+    private fun fetch(node: String, now: Long): Loaded {
+        val settings = Settings(context)
+        val server = settings.server
+        val token = settings.token
+        if (server == null || token == null) {
+            return Loaded.Failed(
+                SessionError(SessionError.ERROR_SESSION_AUTHENTICATION_EXPIRED, context.getString(R.string.car_connect_first)),
+            )
+        }
+        if (!Car.isNode(node)) return Loaded.Failed(SessionError(SessionError.ERROR_BAD_VALUE, ""))
+        val (status, body) = NoticeWorker.fetch(Car.address(server, node), token)
+            ?: return Loaded.Failed(SessionError(SessionError.ERROR_IO, context.getString(R.string.car_offline)))
+        if (status == 401) {
+            return Loaded.Failed(
+                SessionError(SessionError.ERROR_SESSION_AUTHENTICATION_EXPIRED, context.getString(R.string.car_connect_first)),
+            )
+        }
+        val page = Car.page(body)
+            ?: return Loaded.Failed(SessionError(SessionError.ERROR_IO, context.getString(R.string.car_offline)))
+        if (!page.connected) {
+            return Loaded.Failed(SessionError(SessionError.ERROR_SESSION_SETUP_REQUIRED, context.getString(R.string.car_no_navidrome)))
+        }
+        pages[node] = now to page
+        return Loaded.Page(page)
+    }
+
+    private fun tabs(): ImmutableList<MediaItem> = ImmutableList.of(
+        folder(CarEntry.Folder("albums:added", context.getString(R.string.car_new_albums), null, null, false)),
+        folder(CarEntry.Folder("playlists", context.getString(R.string.car_playlists), null, null, false)),
+        folder(CarEntry.Folder(Car.SHUFFLE, context.getString(R.string.car_shuffle), null, null, true)),
+        folder(CarEntry.Folder(Car.DOWNLOADS, context.getString(R.string.car_downloads), null, null, true)),
+    )
+
+    private fun folder(entry: CarEntry.Folder): MediaItem {
+        val type = when {
+            entry.node.startsWith("album:") -> MediaMetadata.MEDIA_TYPE_ALBUM
+            entry.node.startsWith("playlist:") -> MediaMetadata.MEDIA_TYPE_PLAYLIST
+            entry.node.startsWith("albums:") -> MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS
+            entry.node == "playlists" -> MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS
+            else -> MediaMetadata.MEDIA_TYPE_FOLDER_MIXED
+        }
+        return MediaItem.Builder()
+            .setMediaId(entry.node)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(entry.title)
+                    .setSubtitle(entry.subtitle)
+                    .setArtist(entry.subtitle)
+                    .setArtworkUri(Car.coverUri(authority(context), entry.cover)?.toUri())
+                    .setIsBrowsable(true)
+                    .setIsPlayable(entry.playable)
+                    .setMediaType(type)
+                    .build(),
+            )
+            .build()
+    }
+
+    private fun browsableSong(parent: String, index: Int, track: BridgeTrack): MediaItem = MediaItem.Builder()
+        .setMediaId(Car.songId(parent, index))
+        .setMediaMetadata(metadata(context, track))
+        .build()
+
+    companion object {
+        const val TRACK = "soundscape.track"
+        const val OFFLINE = "https://offline.invalid"
+        private const val SEARCH_SUPPORTED = "android.media.browse.SEARCH_SUPPORTED"
+        private const val KEEP_MS = 5 * 60 * 1000L
+
+        fun authority(context: Context) = "${context.packageName}.covers"
+
+        fun metadata(context: Context, track: BridgeTrack, server: String? = null): MediaMetadata = MediaMetadata.Builder()
+            .setTitle(track.title)
+            .setArtist(track.artist)
+            .setAlbumTitle(track.album)
+            .setArtworkUri(
+                (Car.coverUri(authority(context), track.cover) ?: server?.let { Bridge.coverAddress(it, track.cover) })?.toUri(),
+            )
+            .setIsBrowsable(false)
+            .setIsPlayable(true)
+            .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
+            .setExtras(Bundle().apply { putString(TRACK, Car.trackJson(track)) })
+            .build()
+
+        fun playableItem(context: Context, server: String, track: BridgeTrack): MediaItem = MediaItem.Builder()
+            .setMediaId(track.trackId)
+            .setUri(Bridge.streamAddress(server, track))
+            .setCustomCacheKey(track.trackId)
+            .setMediaMetadata(metadata(context, track, server.takeIf { it != OFFLINE }))
+            .build()
+    }
+}

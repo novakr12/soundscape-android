@@ -12,14 +12,16 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSourceBitmapLoader
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -31,9 +33,10 @@ object Playback {
 }
 
 @OptIn(UnstableApi::class)
-class PlaybackService : MediaSessionService() {
+class PlaybackService : MediaLibraryService() {
     private lateinit var pagePlayer: PagePlayer
-    private lateinit var session: MediaSession
+    private lateinit var session: MediaLibrarySession
+    private lateinit var library: CarLibrary
     private val main = Handler(Looper.getMainLooper())
     private val reporter = Executors.newSingleThreadExecutor()
     private var native: Native? = null
@@ -43,21 +46,29 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
-        pagePlayer = PagePlayer(Looper.getMainLooper()) { script -> Playback.runInPage?.invoke(script) }
+        pagePlayer = PagePlayer(
+            Looper.getMainLooper(),
+            send = { script -> Playback.runInPage?.invoke(script) },
+            busy = { native != null },
+            onItems = ::playFromCar,
+        )
+        library = CarLibrary(this)
         val opens = PendingIntent.getActivity(
             this,
             0,
             Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        session = MediaSession.Builder(this, pagePlayer)
+        session = MediaLibrarySession.Builder(this, pagePlayer, library)
             .setSessionActivity(opens)
-            .setBitmapLoader(DataSourceBitmapLoader.Builder(this).setDataSourceFactory(withCookies()).build())
+            .setBitmapLoader(
+                DataSourceBitmapLoader.Builder(this).setDataSourceFactory(DefaultDataSource.Factory(this, withCookies())).build(),
+            )
             .build()
         Playback.service = this
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = session
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession = session
 
     fun showPage(state: PageState?, server: String) {
         pagePlayer.show(state, server)
@@ -81,7 +92,23 @@ class PlaybackService : MediaSessionService() {
         start(state, settings.server ?: OFFLINE, settings.token.orEmpty(), fromPage = false)
     }
 
-    private fun start(state: PageState, server: String, token: String, fromPage: Boolean) {
+    private fun playFromCar(items: List<MediaItem>, index: Int, positionMs: Long) {
+        val tracks = items.mapNotNull { Car.trackFrom(it.mediaMetadata.extras?.getString(CarLibrary.TRACK)) }
+        val at = index.coerceAtLeast(0)
+        if (tracks.isEmpty() || tracks.size != items.size || at !in tracks.indices) return
+        val time = positionMs.coerceAtLeast(0) / 1000.0
+        native?.let {
+            it.replace(tracks, at, time, true)
+            return
+        }
+        val settings = Settings(this)
+        val server = settings.server ?: return
+        val token = settings.token ?: return
+        val volume = pagePlayer.shown?.volume ?: DEFAULT_VOLUME
+        start(PageState(tracks, at, time, null, true, volume, "off"), server, token, fromPage = true).replaced = true
+    }
+
+    private fun start(state: PageState, server: String, token: String, fromPage: Boolean): Native {
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(Downloads.playing(this)))
             .setAudioAttributes(
@@ -101,6 +128,7 @@ class PlaybackService : MediaSessionService() {
         player.prepare()
         player.playWhenReady = true
         if (fromPage) main.postDelayed({ if (native === running && !running.live) giveUp(running) }, TAKE_OVER_WITHIN_MS)
+        return running
     }
 
     fun handBackState(): HandBack? {
@@ -122,7 +150,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun itemsFor(server: String, tracks: List<BridgeTrack>) =
-        tracks.map { PagePlayer.mediaItemFor(server, it, Bridge.streamAddress(server, it), it.trackId) }
+        tracks.map { CarLibrary.playableItem(this, server, it) }
 
     private fun giveUp(running: Native) {
         if (native !== running) return
@@ -142,6 +170,7 @@ class PlaybackService : MediaSessionService() {
         native?.release()
         native = null
         session.release()
+        library.release()
         pagePlayer.release()
         reporter.shutdown()
         if (Playback.service === this) Playback.service = null
@@ -242,6 +271,29 @@ class PlaybackService : MediaSessionService() {
             link?.reportSoon()
         }
 
+        override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+            if (reason != Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) return
+            val now = (0 until player.mediaItemCount).map {
+                Car.trackFrom(player.getMediaItemAt(it).mediaMetadata.extras?.getString(CarLibrary.TRACK))
+            }
+            if (now.isEmpty() || now.any { it == null }) return
+            val known = now.filterNotNull()
+            if (known.map { it.trackId } == tracks.map { it.trackId }) return
+            tracks = known
+            replaced = true
+            announced = -1
+        }
+
+        fun replace(next: List<BridgeTrack>, position: Int, time: Double, playing: Boolean) {
+            tracks = next
+            replaced = true
+            announced = -1
+            player.setMediaItems(itemsFor(server, next), position, (time * 1000).toLong())
+            player.volume = volumeAt(position)
+            player.prepare()
+            player.playWhenReady = playing
+        }
+
         private fun connect() {
             if (link != null || token.isEmpty() || server == OFFLINE) return
             val settings = Settings(this@PlaybackService)
@@ -276,15 +328,7 @@ class PlaybackService : MediaSessionService() {
                     volume = command.volume
                     player.volume = volumeAt(player.currentMediaItemIndex)
                 }
-                is RemoteCommand.Take -> {
-                    tracks = command.tracks
-                    replaced = true
-                    announced = -1
-                    player.setMediaItems(itemsFor(server, tracks), command.position, (command.time * 1000).toLong())
-                    player.volume = volumeAt(command.position)
-                    player.prepare()
-                    player.playWhenReady = command.playing
-                }
+                is RemoteCommand.Take -> replace(command.tracks, command.position, command.time, command.playing)
                 is RemoteCommand.Send -> {
                     val body = Remote.send(
                         command.to,
@@ -337,6 +381,7 @@ class PlaybackService : MediaSessionService() {
     private companion object {
         const val TICK_MS = 1000L
         const val TAKE_OVER_WITHIN_MS = 12_000L
-        const val OFFLINE = "https://offline.invalid"
+        const val OFFLINE = CarLibrary.OFFLINE
+        const val DEFAULT_VOLUME = 0.8
     }
 }

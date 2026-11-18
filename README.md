@@ -38,6 +38,14 @@ Downloaded songs play from the phone: they don't use mobile data when you're onl
 
 Songs you play offline still count: the app remembers each play with its time and sends them to Soundscape when it's back online.
 
+## Android Auto
+
+Soundscape shows up in Android Auto as a music app. Its four tabs are **New albums**, **Playlists**, **Shuffle** (50 random songs) and **Downloads**, and the search button and "play … on Soundscape" voice requests search your Navidrome library. Choosing a song plays the whole album or playlist from that song on. Playback in the car uses the same player as background playback, so plays count, Devices sees the phone, and when you open the app on the phone it continues from there.
+
+It needs the app to be connected and Navidrome connected on Soundscape's Connect page. Without a connection the car shows your downloads only. Covers come through the app, so the car never sees your token.
+
+Android Auto only lists apps installed from Google Play unless you turn on **Unknown sources** in Android Auto's developer settings: open Android Auto's settings on the phone, tap **Version** ten times, then in the menu (⋮) choose **Developer settings** and turn on **Unknown sources**.
+
 ## Devices
 
 Soundscape's **Devices** list, in the player on any of your Soundscape windows, shows the phone as "Soundscape on" and its model name. From your computer you can see what the phone plays, pause it, skip, seek, change its volume, send it your music or take its music over, also while it plays in the background with the screen off. The app needs to be connected and **keep the music playing** turned on under **This app**.
@@ -61,8 +69,7 @@ Once a day the app looks at the latest release on GitHub. When a newer version i
 
 ## What's coming
 
-1. Android Auto
-2. F-Droid and Google Play
+1. F-Droid and Google Play
 
 ## Build
 
