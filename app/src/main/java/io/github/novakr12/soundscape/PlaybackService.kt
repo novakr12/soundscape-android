@@ -272,8 +272,13 @@ class PlaybackService : MediaLibraryService() {
             link?.reportSoon()
         }
 
+        override fun onRepeatModeChanged(repeatMode: Int) {
+            link?.reportSoon()
+        }
+
         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
             if (reason != Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) return
+            link?.reportSoon()
             val now = (0 until player.mediaItemCount).map {
                 Car.trackFrom(player.getMediaItemAt(it).mediaMetadata.extras?.getString(CarLibrary.TRACK))
             }
@@ -309,7 +314,13 @@ class PlaybackService : MediaLibraryService() {
             val going = player.playWhenReady &&
                 player.playbackState != Player.STATE_ENDED &&
                 player.playbackState != Player.STATE_IDLE
-            return RemoteSnapshot(track, going, player.currentPosition / 1000.0, length, volume)
+            val repeat = when (player.repeatMode) {
+                Player.REPEAT_MODE_ALL -> "all"
+                Player.REPEAT_MODE_ONE -> "one"
+                else -> "off"
+            }
+            val upNext = tracks.drop(index + 1).take(Remote.MOST_UP_NEXT)
+            return RemoteSnapshot(track, going, player.currentPosition / 1000.0, length, volume, repeat, upNext)
         }
 
         private fun obey(command: RemoteCommand) {
@@ -330,6 +341,18 @@ class PlaybackService : MediaLibraryService() {
                     player.volume = volumeAt(player.currentMediaItemIndex)
                 }
                 is RemoteCommand.Take -> replace(command.tracks, command.position, command.time, command.playing)
+                is RemoteCommand.Repeat -> player.repeatMode = Bridge.repeatMode(command.mode)
+                is RemoteCommand.Jump -> {
+                    val target = player.currentMediaItemIndex + command.ahead
+                    if (target < player.mediaItemCount) player.seekTo(target, 0)
+                }
+                is RemoteCommand.Enqueue -> {
+                    val count = player.mediaItemCount
+                    val at = if (command.next) (player.currentMediaItemIndex + 1).coerceIn(0, count) else count
+                    tracks = tracks.toMutableList().apply { add(at.coerceAtMost(size), command.track) }
+                    replaced = true
+                    player.addMediaItem(at, CarLibrary.playableItem(this@PlaybackService, server, command.track))
+                }
                 is RemoteCommand.Send -> {
                     val body = Remote.send(
                         command.to,

@@ -50,7 +50,7 @@ Android Auto only lists apps installed from Google Play unless you turn on **Unk
 
 Soundscape's **Devices** list, in the player on any of your Soundscape windows, shows the phone as "Soundscape on" and its model name. From your computer you can see what the phone plays, pause it, skip, seek, change its volume, send it your music or take its music over, also while it plays in the background with the screen off. The app needs to be connected and **keep the music playing** turned on under **This app**.
 
-When the phone's player bar follows another device (after **Play my music there**, or after tapping "Playing on…"), the lock screen and the media notification follow it too: they show that device's song with "Playing on" and its name, and their buttons pause, skip and seek over there. Nothing plays on the phone itself.
+When the phone's player bar follows another device (after **Play my music there**, or after tapping "Playing on…"), the lock screen and the media notification follow it too: they show that device's song with "Playing on" and its name, and their buttons pause, skip and seek over there. Nothing plays on the phone itself. While the app plays in the background, other devices can also add songs to its queue, jump ahead in it and change repeat.
 
 The phone stays in the list while the app is open or playing. If you close it from the recent apps while nothing plays, it drops off after a couple of minutes. Music sent to the phone while the app is in the background starts within a few seconds, and when you open the app again it continues with that music.
 

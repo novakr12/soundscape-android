@@ -15,6 +15,9 @@ sealed class RemoteCommand {
     data class Take(val tracks: List<BridgeTrack>, val position: Int, val time: Double, val playing: Boolean) :
         RemoteCommand()
     data class Send(val to: String) : RemoteCommand()
+    data class Enqueue(val track: BridgeTrack, val next: Boolean) : RemoteCommand()
+    data class Repeat(val mode: String) : RemoteCommand()
+    data class Jump(val ahead: Int) : RemoteCommand()
 }
 
 data class RemoteSnapshot(
@@ -23,6 +26,8 @@ data class RemoteSnapshot(
     val time: Double,
     val duration: Double?,
     val volume: Double,
+    val repeat: String? = null,
+    val upNext: List<BridgeTrack> = emptyList(),
 )
 
 class EventReader {
@@ -56,6 +61,8 @@ object Remote {
     const val HEARTBEAT_MS = 30_000L
     const val RESTART_AFTER_SECONDS = 3.0
     private const val MOST_TRACKS = 500
+    const val MOST_UP_NEXT = 10
+    private val REPEAT_MODES = setOf("off", "all", "one")
     private const val LETTERS = "abcdefghijklmnopqrstuvwxyz0123456789"
     private val DEVICE_ID = Regex("^[A-Za-z0-9_-]{8,64}$")
 
@@ -84,6 +91,15 @@ object Remote {
             .put("duration", snapshot.duration?.takeIf { it.isFinite() && it > 0 } ?: JSONObject.NULL)
             .put("volume", snapshot.volume.coerceIn(0.0, 1.0))
             .put("blocked", false)
+            .put("repeat", snapshot.repeat?.takeIf { it in REPEAT_MODES } ?: JSONObject.NULL)
+            .put(
+                "upNext",
+                JSONArray().apply {
+                    snapshot.upNext.take(MOST_UP_NEXT).forEach { next ->
+                        put(JSONObject().put("trackId", next.trackId).put("title", next.title).put("artist", next.artist))
+                    }
+                },
+            )
             .put("track", snapshot.track?.let { track ->
                 JSONObject()
                     .put("trackId", track.trackId)
@@ -138,6 +154,11 @@ object Remote {
             "volume" -> item.optDouble("volume").takeIf { it.isFinite() && it in 0.0..1.0 }?.let { RemoteCommand.Volume(it) }
             "send" -> item.optString("to").takeIf { isDeviceId(it) }?.let { RemoteCommand.Send(it) }
             "take" -> take(item)
+            "repeat" -> item.optString("mode").takeIf { it in REPEAT_MODES }?.let { RemoteCommand.Repeat(it) }
+            "jump" -> item.optInt("ahead", 0).takeIf { it in 1..MOST_UP_NEXT }?.let { RemoteCommand.Jump(it) }
+            "enqueue" -> item.optJSONObject("track")?.let(::track)?.let {
+                RemoteCommand.Enqueue(it, item.optBoolean("next", false))
+            }
             else -> null
         }
     }
@@ -145,18 +166,7 @@ object Remote {
     private fun take(item: JSONObject): RemoteCommand? {
         val list = item.optJSONArray("tracks") ?: return null
         val tracks = (0 until minOf(list.length(), MOST_TRACKS)).mapNotNull { index ->
-            val track = list.optJSONObject(index) ?: return@mapNotNull null
-            val trackId = track.text("trackId") ?: return@mapNotNull null
-            BridgeTrack(
-                trackId = trackId,
-                songId = track.text("songId"),
-                title = track.text("title") ?: return@mapNotNull null,
-                artist = track.text("artist") ?: return@mapNotNull null,
-                album = track.text("album"),
-                cover = track.text("cover"),
-                duration = track.optDouble("duration").takeIf { it.isFinite() && it > 0 },
-                level = 1.0,
-            )
+            list.optJSONObject(index)?.let(::track)
         }
         val position = item.optInt("position", -1)
         if (tracks.isEmpty() || position !in tracks.indices) return null
@@ -165,6 +175,19 @@ object Remote {
             position,
             item.optDouble("time", 0.0).takeIf { it.isFinite() && it > 0 } ?: 0.0,
             item.optBoolean("playing", true),
+        )
+    }
+
+    private fun track(item: JSONObject): BridgeTrack? {
+        return BridgeTrack(
+            trackId = item.text("trackId") ?: return null,
+            songId = item.text("songId"),
+            title = item.text("title") ?: return null,
+            artist = item.text("artist") ?: return null,
+            album = item.text("album"),
+            cover = item.text("cover"),
+            duration = item.optDouble("duration").takeIf { it.isFinite() && it > 0 },
+            level = 1.0,
         )
     }
 

@@ -43,6 +43,43 @@ class RemoteTest {
     }
 
     @Test
+    fun readsASongToQueueUp() {
+        val next = Remote.command(
+            JSONObject("""{"do":"enqueue","next":true,"track":{"trackId":"a","title":"One","artist":"Band","songId":"nav-1"}}"""),
+        ) as RemoteCommand.Enqueue
+        assertTrue(next.next)
+        assertEquals("nav-1", next.track.songId)
+        val later = Remote.command(JSONObject("""{"do":"enqueue","track":{"trackId":"a","title":"One","artist":"Band"}}"""))
+        assertFalse((later as RemoteCommand.Enqueue).next)
+        assertNull(Remote.command(JSONObject("""{"do":"enqueue","track":{"trackId":"a"}}""")))
+        assertNull(Remote.command(JSONObject("""{"do":"enqueue"}""")))
+    }
+
+    @Test
+    fun readsRepeatAndJumps() {
+        assertEquals(RemoteCommand.Repeat("one"), Remote.command(JSONObject("""{"do":"repeat","mode":"one"}""")))
+        assertNull(Remote.command(JSONObject("""{"do":"repeat","mode":"twice"}""")))
+        assertEquals(RemoteCommand.Jump(2), Remote.command(JSONObject("""{"do":"jump","ahead":2}""")))
+        assertNull(Remote.command(JSONObject("""{"do":"jump","ahead":0}""")))
+        assertNull(Remote.command(JSONObject("""{"do":"jump","ahead":11}""")))
+        assertNull(Remote.command(JSONObject("""{"do":"shuffle","on":true}""")))
+    }
+
+    @Test
+    fun reportsWhatPlaysNext() {
+        val upNext = (1..12).map { song.copy(trackId = "n$it", title = "Next $it") }
+        val state = JSONObject(Remote.report("phone000001", "x", RemoteSnapshot(song, true, 1.0, 200.0, 0.5, "all", upNext)))
+            .getJSONObject("state")
+        assertEquals("all", state.getString("repeat"))
+        assertEquals(10, state.getJSONArray("upNext").length())
+        assertEquals("Next 1", state.getJSONArray("upNext").getJSONObject(0).getString("title"))
+        assertFalse(state.getJSONArray("upNext").getJSONObject(0).has("cover"))
+        val plain = JSONObject(Remote.report("phone000001", "x", RemoteSnapshot(song, true, 1.0, 200.0, 0.5))).getJSONObject("state")
+        assertTrue(plain.isNull("repeat"))
+        assertEquals(0, plain.getJSONArray("upNext").length())
+    }
+
+    @Test
     fun reportsWhatThePhonePlays() {
         val report = JSONObject(Remote.report("phone000001", "Soundscape on Pixel", RemoteSnapshot(song, true, 30.5, 200.0, 0.6)))
         assertEquals("phone000001", report.getString("id"))
