@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.webkit.CookieManager
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
@@ -77,7 +78,7 @@ class PlaybackService : MediaLibraryService() {
 
     fun takeOver(state: PageState, server: String, token: String) {
         if (native != null || state.remote != null) return
-        start(state, server, token, fromPage = true)
+        start(state, server, token, fromPage = true, catchUp = state.playing)
     }
 
     fun playDownloads(tracks: List<BridgeTrack>, at: Int) {
@@ -109,7 +110,13 @@ class PlaybackService : MediaLibraryService() {
         start(PageState(tracks, at, time, null, true, volume, "off"), server, token, fromPage = true).replaced = true
     }
 
-    private fun start(state: PageState, server: String, token: String, fromPage: Boolean): Native {
+    private fun start(
+        state: PageState,
+        server: String,
+        token: String,
+        fromPage: Boolean,
+        catchUp: Boolean = false,
+    ): Native {
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(Downloads.playing(this)))
             .setAudioAttributes(
@@ -127,7 +134,9 @@ class PlaybackService : MediaLibraryService() {
         player.volume = running.volumeAt(state.position)
         if (!fromPage) session.player = player
         player.prepare()
-        player.playWhenReady = true
+        running.waiting = catchUp
+        running.since = SystemClock.elapsedRealtime()
+        player.playWhenReady = !catchUp
         if (fromPage) main.postDelayed({ if (native === running && !running.live) giveUp(running) }, TAKE_OVER_WITHIN_MS)
         return running
     }
@@ -222,6 +231,8 @@ class PlaybackService : MediaLibraryService() {
         val fromPage: Boolean,
     ) : Player.Listener {
         var live = false
+        var waiting = false
+        var since = 0L
         var tracks = state.tracks
         var replaced = false
         private var volume = state.volume
@@ -270,6 +281,12 @@ class PlaybackService : MediaLibraryService() {
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             link?.reportSoon()
+            if (!waiting || playbackState != Player.STATE_READY) return
+            waiting = false
+            val known = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }?.let { it / 1000.0 }
+            val target = Bridge.catchUp(state.time, SystemClock.elapsedRealtime() - since, known ?: state.current.duration)
+            player.seekTo(player.currentMediaItemIndex, (target * 1000).toLong())
+            player.playWhenReady = true
         }
 
         override fun onRepeatModeChanged(repeatMode: Int) {

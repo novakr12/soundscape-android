@@ -108,4 +108,12 @@ class BridgeTest {
             Bridge.connectAddress(server, "Android (Pixel 7)"),
         )
     }
+
+    @Test
+    fun catchesUpWithThePageWhileTheSongLoads() {
+        assertEquals(84.2, Bridge.catchUp(83.4, 800, 200.0), 1e-9)
+        assertEquals(10.0, Bridge.catchUp(10.0, -5, null), 1e-9)
+        assertEquals(199.5, Bridge.catchUp(199.0, 3000, 200.0), 1e-9)
+        assertEquals(3.0, Bridge.catchUp(-1.0, 3000, 0.2), 1e-9)
+    }
 }

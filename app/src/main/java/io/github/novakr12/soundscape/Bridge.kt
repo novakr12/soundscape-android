@@ -39,6 +39,7 @@ object Bridge {
     private const val SHORTEST_SONG_SECONDS = 30.0
     private const val LONGEST_WAIT_SECONDS = 240.0
     private const val LONGEST_STEP_SECONDS = 2.0
+    private const val CATCH_UP_MARGIN = 0.5
 
     fun command(name: String, value: Double? = null): String {
         val argument = value?.takeIf { it.isFinite() }?.toString() ?: "undefined"
@@ -82,6 +83,12 @@ object Bridge {
             repeat = root.optString("repeat", "off"),
             remote = root.optJSONObject("remote")?.text("name"),
         )
+    }
+
+    fun catchUp(time: Double, elapsedMs: Long, duration: Double?): Double {
+        val moved = time.coerceAtLeast(0.0) + elapsedMs.coerceAtLeast(0) / 1000.0
+        val end = duration?.takeIf { it.isFinite() && it > CATCH_UP_MARGIN }?.minus(CATCH_UP_MARGIN)
+        return if (end != null) minOf(moved, end) else moved
     }
 
     fun lockScreen(state: PageState, where: (String) -> String): PageState {
