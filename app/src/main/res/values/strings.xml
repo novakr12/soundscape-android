@@ -33,6 +33,7 @@
     <string name="downloads_waiting">waiting · %1$d%%</string>
     <string name="downloads_play_offline">Play downloads</string>
     <string name="downloads_connect_first">Connect the app first (Settings → This app), then download.</string>
+    <string name="playing_on">Playing on %1$s</string>
     <string name="car_new_albums">New albums</string>
     <string name="car_playlists">Playlists</string>
     <string name="car_shuffle">Shuffle</string>

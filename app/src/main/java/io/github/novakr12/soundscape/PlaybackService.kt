@@ -51,6 +51,7 @@ class PlaybackService : MediaLibraryService() {
             send = { script -> Playback.runInPage?.invoke(script) },
             busy = { native != null },
             onItems = ::playFromCar,
+            where = { name -> getString(R.string.playing_on, name) },
         )
         library = CarLibrary(this)
         val opens = PendingIntent.getActivity(
@@ -75,7 +76,7 @@ class PlaybackService : MediaLibraryService() {
     }
 
     fun takeOver(state: PageState, server: String, token: String) {
-        if (native != null) return
+        if (native != null || state.remote != null) return
         start(state, server, token, fromPage = true)
     }
 

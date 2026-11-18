@@ -25,6 +25,7 @@ data class PageState(
     val playing: Boolean,
     val volume: Double,
     val repeat: String,
+    val remote: String? = null,
 ) {
     val current: BridgeTrack get() = tracks[position]
 }
@@ -79,7 +80,14 @@ object Bridge {
             playing = root.optBoolean("playing", false),
             volume = root.optDouble("volume", 0.8).takeIf { it.isFinite() }?.coerceIn(0.0, 1.0) ?: 0.8,
             repeat = root.optString("repeat", "off"),
+            remote = root.optJSONObject("remote")?.text("name"),
         )
+    }
+
+    fun lockScreen(state: PageState, where: (String) -> String): PageState {
+        val elsewhere = state.remote ?: return state
+        val track = state.current.copy(album = where(elsewhere))
+        return state.copy(tracks = listOf(track, track, track), position = 1, repeat = "off")
     }
 
     fun streamAddress(server: String, track: BridgeTrack): String = if (track.songId != null) {

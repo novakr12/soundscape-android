@@ -69,7 +69,7 @@ object Remote {
     }
 
     fun pageScript(id: String, name: String) =
-        "window.soundscapeDeviceId = ${JSONObject.quote(id)}; window.soundscapeDeviceName = ${JSONObject.quote(name)};"
+        "window.soundscapeDeviceId = ${JSONObject.quote(id)}; window.soundscapeDeviceName = ${JSONObject.quote(name)}; window.soundscapeBridgeRemote = true;"
 
     fun holdScript(held: Boolean) = if (held) {
         "(() => { window.soundscapeDeviceHeld = true; })()"

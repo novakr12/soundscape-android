@@ -18,12 +18,13 @@ class PagePlayer(
     private val send: (String) -> Unit,
     private val busy: () -> Boolean,
     private val onItems: (List<MediaItem>, Int, Long) -> Unit,
+    private val where: (String) -> String,
 ) : SimpleBasePlayer(looper) {
     private var page: PageState? = null
     private var server = ""
 
     fun show(state: PageState?, server: String) {
-        page = state
+        page = state?.let { Bridge.lockScreen(it, where) }
         this.server = server
         invalidateState()
     }
@@ -111,7 +112,7 @@ class PagePlayer(
 
     override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
         val state = page ?: return Futures.immediateVoidFuture()
-        if (mediaItemIndex in state.tracks.indices) {
+        if (state.remote == null && mediaItemIndex in state.tracks.indices) {
             page = state.copy(position = mediaItemIndex, time = positionMs.coerceAtLeast(0) / 1000.0, duration = null)
         }
         val command = when {

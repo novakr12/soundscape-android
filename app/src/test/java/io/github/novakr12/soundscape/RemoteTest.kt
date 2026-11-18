@@ -97,10 +97,30 @@ class RemoteTest {
         val script = Remote.pageScript(id, "Soundscape on \"Test\"</script>")
         assertTrue(script.startsWith("window.soundscapeDeviceId = \"$id\";"))
         assertTrue(script.contains("\\\"Test\\\""))
+        assertTrue(script.contains("window.soundscapeBridgeRemote = true;"))
         assertTrue(Remote.holdScript(false).contains("soundscape-device-report"))
         assertEquals("https://music.example.com:8443", Server.origin("https://Music.Example.com:8443/soundscape"))
         assertEquals("http://192.168.1.5", Server.origin("http://192.168.1.5"))
         assertNull(Server.origin("ftp://x"))
+    }
+
+    @Test
+    fun showsAnotherDevicesSongOnTheLockScreen() {
+        val page = Bridge.parse(
+            """{"tracks":[{"trackId":"t1","songId":null,"title":"Teardrop","artist":"Massive Attack","album":"Mezzanine",
+                "cover":"/api/cover/t1","duration":330,"level":1}],"position":0,"time":32,"duration":330,"playing":true,
+                "volume":0.6,"repeat":"off","remote":{"id":"desktop0001","name":"Soundscape desktop"}}""",
+        )!!
+        assertEquals("Soundscape desktop", page.remote)
+        val shown = Bridge.lockScreen(page) { "Playing on $it" }
+        assertEquals(3, shown.tracks.size)
+        assertEquals(1, shown.position)
+        assertEquals("Teardrop", shown.current.title)
+        assertEquals("Playing on Soundscape desktop", shown.current.album)
+        assertEquals(32.0, shown.time, 0.0)
+        val local = page.copy(remote = null)
+        assertEquals(local, Bridge.lockScreen(local) { "x" })
+        assertNull(Bridge.parse("""{"tracks":[],"position":0}""")?.remote)
     }
 
     @Test

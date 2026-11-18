@@ -189,7 +189,7 @@ class MainActivity : AppCompatActivity() {
             pagePlaying = state?.playing == true
             Playback.service?.showPage(state, server)
             if (pagePlaying) connectToService()
-            if (pagePlaying && state != null && !visible && canPlayInBackground()) {
+            if (pagePlaying && state != null && state.remote == null && !visible && canPlayInBackground()) {
                 Settings(this).token?.let { token -> Playback.service?.takeOver(state, server, token) }
             }
             if (pagePlaying && !wasPlaying && !visible) {
@@ -218,7 +218,7 @@ class MainActivity : AppCompatActivity() {
         if (service.playingNatively || !::web.isInitialized) return
         web.evaluateJavascript(Bridge.READ) { result ->
             val state = Bridge.parse(result) ?: return@evaluateJavascript
-            if (state.playing && !visible) service.takeOver(state, server, token)
+            if (state.playing && state.remote == null && !visible) service.takeOver(state, server, token)
         }
     }
 
