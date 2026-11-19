@@ -141,7 +141,11 @@ class PlaybackService : MediaLibraryService() {
         return running
     }
 
+    var handingBack = false
+        private set
+
     fun handBackState(): HandBack? {
+        if (handingBack) return null
         val running = native?.takeIf { it.live } ?: return null
         val player = running.player
         return HandBack(
@@ -149,10 +153,20 @@ class PlaybackService : MediaLibraryService() {
             player.currentPosition / 1000.0,
             player.playWhenReady,
             running.tracks.takeIf { running.replaced },
+            System.currentTimeMillis().takeIf { player.isPlaying },
         )
     }
 
+    fun startHandBack() {
+        handingBack = true
+    }
+
+    fun abandonHandBack() {
+        handingBack = false
+    }
+
     fun finishHandBack() {
+        handingBack = false
         val running = native ?: return
         native = null
         session.player = pagePlayer
@@ -236,6 +250,7 @@ class PlaybackService : MediaLibraryService() {
         private var pageTime = state.time
         private var refined = false
         private var refining = false
+        private var settledSince: Long? = null
         var tracks = state.tracks
         var replaced = false
         private var volume = state.volume
@@ -268,13 +283,29 @@ class PlaybackService : MediaLibraryService() {
             val page = Bridge.catchUp(pageTime, now - since, known ?: state.current.duration)
             val behind = page - player.currentPosition / 1000.0
             when {
-                Bridge.jumpNeeded(behind) -> player.seekTo(player.currentMediaItemIndex, (page * 1000).toLong())
-                Bridge.inStep(behind) && refined -> {
-                    finishSync()
-                    return
+                Bridge.jumpNeeded(behind) -> {
+                    player.seekTo(player.currentMediaItemIndex, (page * 1000).toLong())
+                    settledSince = null
                 }
-                Bridge.inStep(behind) -> askPageAgain()
-                else -> player.playbackParameters = PlaybackParameters(Bridge.nudge(behind))
+                Bridge.inStep(behind) -> {
+                    val settled = settledSince
+                    when {
+                        player.playbackParameters.speed != 1f -> {
+                            player.playbackParameters = PlaybackParameters.DEFAULT
+                            settledSince = now
+                        }
+                        settled == null -> settledSince = now
+                        !refined -> askPageAgain()
+                        now - settled >= SETTLE_MS -> {
+                            finishSync()
+                            return
+                        }
+                    }
+                }
+                else -> {
+                    player.playbackParameters = PlaybackParameters(Bridge.nudge(behind))
+                    settledSince = null
+                }
             }
             main.postDelayed(sync, SYNC_STEP_MS)
         }
@@ -496,6 +527,7 @@ class PlaybackService : MediaLibraryService() {
         const val SYNC_WITHIN_MS = 6_000L
         const val SYNC_STEP_MS = 50L
         const val TRUSTED_READ_MS = 150L
+        const val SETTLE_MS = 300L
         val MUSIC: AudioAttributes =
             AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
         const val OFFLINE = CarLibrary.OFFLINE

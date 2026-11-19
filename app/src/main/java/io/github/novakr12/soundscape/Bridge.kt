@@ -26,11 +26,18 @@ data class PageState(
     val volume: Double,
     val repeat: String,
     val remote: String? = null,
+    val handing: Boolean? = null,
 ) {
     val current: BridgeTrack get() = tracks[position]
 }
 
-data class HandBack(val position: Int, val time: Double, val playing: Boolean, val tracks: List<BridgeTrack>? = null)
+data class HandBack(
+    val position: Int,
+    val time: Double,
+    val playing: Boolean,
+    val tracks: List<BridgeTrack>? = null,
+    val at: Long? = null,
+)
 
 object Bridge {
     const val READ =
@@ -51,9 +58,14 @@ object Bridge {
     }
 
     fun handBack(back: HandBack): String {
-        val time = Math.round(back.time.coerceAtLeast(0.0) * 10) / 10.0
+        val time = if (back.at != null) {
+            Math.round(back.time.coerceAtLeast(0.0) * 1000) / 1000.0
+        } else {
+            Math.round(back.time.coerceAtLeast(0.0) * 10) / 10.0
+        }
         val tracks = back.tracks?.let { ", tracks: ${Remote.handed(it)}" }.orEmpty()
-        return "(() => { const p = window.soundscapePlayer; return p ? p.handBack({ position: ${back.position}, time: $time, playing: ${back.playing}$tracks }) : false; })()"
+        val at = back.at?.let { ", at: $it" }.orEmpty()
+        return "(() => { const p = window.soundscapePlayer; return p ? p.handBack({ position: ${back.position}, time: $time, playing: ${back.playing}$at$tracks }) : false; })()"
     }
 
     fun parse(json: String?): PageState? {
@@ -86,7 +98,14 @@ object Bridge {
             volume = root.optDouble("volume", 0.8).takeIf { it.isFinite() }?.coerceIn(0.0, 1.0) ?: 0.8,
             repeat = root.optString("repeat", "off"),
             remote = root.optJSONObject("remote")?.text("name"),
+            handing = if (root.has("handing")) root.optBoolean("handing") else null,
         )
+    }
+
+    fun handBackDone(page: PageState?): Boolean {
+        if (page == null) return false
+        val handing = page.handing ?: return true
+        return page.playing && !handing
     }
 
     fun readMoment(asked: Long, answered: Long) = asked + (answered - asked).coerceAtLeast(0) / 2

@@ -212,8 +212,34 @@ class MainActivity : AppCompatActivity() {
     private fun handBackToPage(service: PlaybackService) {
         val back = service.handBackState() ?: return
         web.evaluateJavascript(Bridge.handBack(back)) { result ->
-            if (result == "true") service.finishHandBack()
+            if (result != "true") return@evaluateJavascript
+            if (back.at == null) {
+                service.finishHandBack()
+                return@evaluateJavascript
+            }
+            service.startHandBack()
+            watchHandBack(service, SystemClock.elapsedRealtime())
         }
+    }
+
+    private fun watchHandBack(service: PlaybackService, started: Long) {
+        main.postDelayed({
+            if (!service.handingBack) return@postDelayed
+            if (!visible) {
+                web.evaluateJavascript(Bridge.command("pause"), null)
+                service.abandonHandBack()
+                return@postDelayed
+            }
+            web.evaluateJavascript(Bridge.READ) { result ->
+                if (!service.handingBack) return@evaluateJavascript
+                val waited = SystemClock.elapsedRealtime() - started
+                if (Bridge.handBackDone(Bridge.parse(result)) || waited > HAND_BACK_WITHIN_MS) {
+                    service.finishHandBack()
+                } else {
+                    watchHandBack(service, started)
+                }
+            }
+        }, HAND_BACK_STEP_MS)
     }
 
     private fun handOverToPhone() {
@@ -514,6 +540,8 @@ class MainActivity : AppCompatActivity() {
         const val ACTION_OPEN = "io.github.novakr12.soundscape.OPEN"
         const val EXTRA_PAGE = "page"
         private const val PAGE_TICK_MS = 1000L
+        private const val HAND_BACK_STEP_MS = 50L
+        private const val HAND_BACK_WITHIN_MS = 7000L
         private const val FOLLOW_SOON_MS = 500L
         private const val BACKGROUND_TICK_MS = 5000L
         private const val ACTION_CONNECT = "io.github.novakr12.soundscape.CONNECT"

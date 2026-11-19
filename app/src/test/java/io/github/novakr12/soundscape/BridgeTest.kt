@@ -133,6 +133,23 @@ class BridgeTest {
     }
 
     @Test
+    fun handsBackWithTheMomentThePositionWasTaken() {
+        val script = Bridge.handBack(HandBack(2, 61.23456, true, at = 1_700_000_000_000))
+        assertTrue(script.contains("{ position: 2, time: 61.235, playing: true, at: 1700000000000 }"))
+    }
+
+    @Test
+    fun waitsForThePageToFinishTakingBack() {
+        val track = BridgeTrack("t1", null, "Song", "Band", null, null, 200.0, 1.0)
+        val page = PageState(listOf(track), 0, 10.0, 200.0, true, 0.8, "off")
+        assertFalse(Bridge.handBackDone(null))
+        assertTrue(Bridge.handBackDone(page))
+        assertFalse(Bridge.handBackDone(page.copy(handing = true)))
+        assertTrue(Bridge.handBackDone(page.copy(handing = false)))
+        assertFalse(Bridge.handBackDone(page.copy(handing = false, playing = false)))
+    }
+
+    @Test
     fun timesAPageReadFromTheMiddleOfItsRoundTrip() {
         assertEquals(1050L, Bridge.readMoment(1000, 1100))
         assertEquals(1000L, Bridge.readMoment(1000, 1000))
