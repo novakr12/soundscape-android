@@ -89,6 +89,8 @@ object Bridge {
         )
     }
 
+    fun readMoment(asked: Long, answered: Long) = asked + (answered - asked).coerceAtLeast(0) / 2
+
     fun inStep(behind: Double) = kotlin.math.abs(behind) <= IN_STEP_SECONDS
 
     fun jumpNeeded(behind: Double) = kotlin.math.abs(behind) > JUMP_ABOVE_SECONDS

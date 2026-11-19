@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.os.Environment
 import android.view.View
@@ -122,6 +123,9 @@ class MainActivity : AppCompatActivity() {
             web.evaluateJavascript(script, null)
             followSoon()
         }
+        Playback.readPage = { reply ->
+            web.evaluateJavascript(Bridge.READ) { result -> reply(Bridge.parse(result)) }
+        }
         if (Settings(this).token != null) NoticeWorker.start(this)
         val app = applicationContext
         worker.execute {
@@ -183,6 +187,7 @@ class MainActivity : AppCompatActivity() {
             if (visible && service.playingForPage) handBackToPage(service)
             return
         }
+        val asked = SystemClock.elapsedRealtime()
         web.evaluateJavascript(Bridge.READ) { result ->
             val state = Bridge.parse(result)
             val wasPlaying = pagePlaying
@@ -190,7 +195,7 @@ class MainActivity : AppCompatActivity() {
             Playback.service?.showPage(state, server)
             if (pagePlaying) connectToService()
             if (pagePlaying && state != null && state.remote == null && !visible && canPlayInBackground()) {
-                Settings(this).token?.let { token -> Playback.service?.takeOver(state, server, token) }
+                Settings(this).token?.let { token -> Playback.service?.takeOver(state, server, token, asked) }
             }
             if (pagePlaying && !wasPlaying && !visible) {
                 main.removeCallbacks(tick)
@@ -216,9 +221,10 @@ class MainActivity : AppCompatActivity() {
         val token = Settings(this).token ?: return
         val service = Playback.service ?: return
         if (service.playingNatively || !::web.isInitialized) return
+        val asked = SystemClock.elapsedRealtime()
         web.evaluateJavascript(Bridge.READ) { result ->
             val state = Bridge.parse(result) ?: return@evaluateJavascript
-            if (state.playing && state.remote == null && !visible) service.takeOver(state, server, token)
+            if (state.playing && state.remote == null && !visible) service.takeOver(state, server, token, asked)
         }
     }
 
@@ -365,6 +371,7 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     private fun setUpWeb() {
         CookieManager.getInstance().setAcceptCookie(true)
+        web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
         web.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -494,6 +501,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         main.removeCallbacks(tick)
         Playback.runInPage = null
+        Playback.readPage = null
         Playback.service?.let { if (!it.playingNatively) it.showPage(null, server) }
         controller?.let { MediaController.releaseFuture(it) }
         worker.shutdown()

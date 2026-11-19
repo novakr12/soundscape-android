@@ -131,4 +131,11 @@ class BridgeTest {
         assertTrue(Bridge.jumpNeeded(1.5))
         assertTrue(Bridge.jumpNeeded(-3.0))
     }
+
+    @Test
+    fun timesAPageReadFromTheMiddleOfItsRoundTrip() {
+        assertEquals(1050L, Bridge.readMoment(1000, 1100))
+        assertEquals(1000L, Bridge.readMoment(1000, 1000))
+        assertEquals(1000L, Bridge.readMoment(1000, 990))
+    }
 }

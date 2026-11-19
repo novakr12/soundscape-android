@@ -32,6 +32,7 @@ import java.util.concurrent.Executors
 object Playback {
     var service: PlaybackService? = null
     var runInPage: ((String) -> Unit)? = null
+    var readPage: ((reply: (PageState?) -> Unit) -> Unit)? = null
 }
 
 @OptIn(UnstableApi::class)
@@ -77,9 +78,10 @@ class PlaybackService : MediaLibraryService() {
         pagePlayer.show(state, server)
     }
 
-    fun takeOver(state: PageState, server: String, token: String) {
+    fun takeOver(state: PageState, server: String, token: String, readAt: Long) {
         if (native != null || state.remote != null) return
-        start(state, server, token, fromPage = true, catchUp = state.playing)
+        start(state, server, token, fromPage = true, catchUp = state.playing).since =
+            Bridge.readMoment(readAt, SystemClock.elapsedRealtime())
     }
 
     fun playDownloads(tracks: List<BridgeTrack>, at: Int) {
@@ -231,6 +233,9 @@ class PlaybackService : MediaLibraryService() {
         var live = false
         var syncing = false
         var since = 0L
+        private var pageTime = state.time
+        private var refined = false
+        private var refining = false
         var tracks = state.tracks
         var replaced = false
         private var volume = state.volume
@@ -260,17 +265,42 @@ class PlaybackService : MediaLibraryService() {
                 return
             }
             val known = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }?.let { it / 1000.0 }
-            val page = Bridge.catchUp(state.time, now - since, known ?: state.current.duration)
+            val page = Bridge.catchUp(pageTime, now - since, known ?: state.current.duration)
             val behind = page - player.currentPosition / 1000.0
             when {
                 Bridge.jumpNeeded(behind) -> player.seekTo(player.currentMediaItemIndex, (page * 1000).toLong())
-                Bridge.inStep(behind) -> {
+                Bridge.inStep(behind) && refined -> {
                     finishSync()
                     return
                 }
+                Bridge.inStep(behind) -> askPageAgain()
                 else -> player.playbackParameters = PlaybackParameters(Bridge.nudge(behind))
             }
             main.postDelayed(sync, SYNC_STEP_MS)
+        }
+
+        private fun askPageAgain() {
+            if (refining) return
+            val read = Playback.readPage
+            if (read == null) {
+                refined = true
+                return
+            }
+            refining = true
+            val asked = SystemClock.elapsedRealtime()
+            read { fresh ->
+                val answered = SystemClock.elapsedRealtime()
+                if (fresh != null &&
+                    fresh.playing &&
+                    fresh.current.trackId == state.current.trackId &&
+                    answered - asked <= TRUSTED_READ_MS
+                ) {
+                    pageTime = fresh.time
+                    since = Bridge.readMoment(asked, answered)
+                }
+                refined = true
+                refining = false
+            }
         }
 
         private fun finishSync() {
@@ -465,6 +495,7 @@ class PlaybackService : MediaLibraryService() {
         const val TAKE_OVER_WITHIN_MS = 12_000L
         const val SYNC_WITHIN_MS = 6_000L
         const val SYNC_STEP_MS = 50L
+        const val TRUSTED_READ_MS = 150L
         val MUSIC: AudioAttributes =
             AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
         const val OFFLINE = CarLibrary.OFFLINE
