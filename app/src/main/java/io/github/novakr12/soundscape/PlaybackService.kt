@@ -11,6 +11,7 @@ import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
@@ -119,10 +120,7 @@ class PlaybackService : MediaLibraryService() {
     ): Native {
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(Downloads.playing(this)))
-            .setAudioAttributes(
-                AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
-                true,
-            )
+            .setAudioAttributes(MUSIC, !catchUp)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
@@ -131,12 +129,12 @@ class PlaybackService : MediaLibraryService() {
         val running = Native(player, state, server, token, fromPage)
         native = running
         player.addListener(running)
-        player.volume = running.volumeAt(state.position)
+        player.volume = if (catchUp) 0f else running.volumeAt(state.position)
         if (!fromPage) session.player = player
         player.prepare()
-        running.waiting = catchUp
+        running.syncing = catchUp
         running.since = SystemClock.elapsedRealtime()
-        player.playWhenReady = !catchUp
+        player.playWhenReady = true
         if (fromPage) main.postDelayed({ if (native === running && !running.live) giveUp(running) }, TAKE_OVER_WITHIN_MS)
         return running
     }
@@ -231,7 +229,7 @@ class PlaybackService : MediaLibraryService() {
         val fromPage: Boolean,
     ) : Player.Listener {
         var live = false
-        var waiting = false
+        var syncing = false
         var since = 0L
         var tracks = state.tracks
         var replaced = false
@@ -247,12 +245,45 @@ class PlaybackService : MediaLibraryService() {
                 main.postDelayed(this, TICK_MS)
             }
         }
+        private var syncStarted = 0L
+        private val sync = object : Runnable {
+            override fun run() {
+                keepInStep()
+            }
+        }
 
-        fun volumeAt(index: Int) = (volume * (tracks.getOrNull(index)?.level ?: 1.0)).toFloat()
+        private fun keepInStep() {
+            if (!syncing) return
+            val now = SystemClock.elapsedRealtime()
+            if (player.currentMediaItemIndex != state.position || now - syncStarted > SYNC_WITHIN_MS) {
+                finishSync()
+                return
+            }
+            val known = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }?.let { it / 1000.0 }
+            val page = Bridge.catchUp(state.time, now - since, known ?: state.current.duration)
+            val behind = page - player.currentPosition / 1000.0
+            when {
+                Bridge.jumpNeeded(behind) -> player.seekTo(player.currentMediaItemIndex, (page * 1000).toLong())
+                Bridge.inStep(behind) -> {
+                    finishSync()
+                    return
+                }
+                else -> player.playbackParameters = PlaybackParameters(Bridge.nudge(behind))
+            }
+            main.postDelayed(sync, SYNC_STEP_MS)
+        }
 
-        override fun onIsPlayingChanged(isPlaying: Boolean) {
-            link?.reportSoon()
-            if (!isPlaying || live) return
+        private fun finishSync() {
+            syncing = false
+            main.removeCallbacks(sync)
+            player.playbackParameters = PlaybackParameters.DEFAULT
+            player.volume = volumeAt(player.currentMediaItemIndex)
+            player.setAudioAttributes(MUSIC, true)
+            goLive()
+        }
+
+        private fun goLive() {
+            if (live) return
             live = true
             session.player = player
             if (fromPage) Playback.runInPage?.invoke(Bridge.command("pause"))
@@ -260,6 +291,21 @@ class PlaybackService : MediaLibraryService() {
             connect()
             announce()
             main.post(tick)
+        }
+
+        fun volumeAt(index: Int) = (volume * (tracks.getOrNull(index)?.level ?: 1.0)).toFloat()
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            link?.reportSoon()
+            if (!isPlaying || live) return
+            if (!syncing) {
+                goLive()
+                return
+            }
+            if (syncStarted == 0L) {
+                syncStarted = SystemClock.elapsedRealtime()
+                main.post(sync)
+            }
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -281,12 +327,6 @@ class PlaybackService : MediaLibraryService() {
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             link?.reportSoon()
-            if (!waiting || playbackState != Player.STATE_READY) return
-            waiting = false
-            val known = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }?.let { it / 1000.0 }
-            val target = Bridge.catchUp(state.time, SystemClock.elapsedRealtime() - since, known ?: state.current.duration)
-            player.seekTo(player.currentMediaItemIndex, (target * 1000).toLong())
-            player.playWhenReady = true
         }
 
         override fun onRepeatModeChanged(repeatMode: Int) {
@@ -414,6 +454,7 @@ class PlaybackService : MediaLibraryService() {
             link = null
             if (live) Playback.runInPage?.invoke(Remote.holdScript(false))
             main.removeCallbacks(tick)
+            main.removeCallbacks(sync)
             player.removeListener(this)
             player.release()
         }
@@ -422,6 +463,10 @@ class PlaybackService : MediaLibraryService() {
     private companion object {
         const val TICK_MS = 1000L
         const val TAKE_OVER_WITHIN_MS = 12_000L
+        const val SYNC_WITHIN_MS = 6_000L
+        const val SYNC_STEP_MS = 50L
+        val MUSIC: AudioAttributes =
+            AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
         const val OFFLINE = CarLibrary.OFFLINE
         const val DEFAULT_VOLUME = 0.8
     }

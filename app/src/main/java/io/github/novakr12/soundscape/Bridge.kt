@@ -40,6 +40,10 @@ object Bridge {
     private const val LONGEST_WAIT_SECONDS = 240.0
     private const val LONGEST_STEP_SECONDS = 2.0
     private const val CATCH_UP_MARGIN = 0.5
+    private const val IN_STEP_SECONDS = 0.03
+    private const val JUMP_ABOVE_SECONDS = 1.0
+    private const val GENTLEST_NUDGE = 0.05
+    private const val STRONGEST_NUDGE = 0.25
 
     fun command(name: String, value: Double? = null): String {
         val argument = value?.takeIf { it.isFinite() }?.toString() ?: "undefined"
@@ -83,6 +87,16 @@ object Bridge {
             repeat = root.optString("repeat", "off"),
             remote = root.optJSONObject("remote")?.text("name"),
         )
+    }
+
+    fun inStep(behind: Double) = kotlin.math.abs(behind) <= IN_STEP_SECONDS
+
+    fun jumpNeeded(behind: Double) = kotlin.math.abs(behind) > JUMP_ABOVE_SECONDS
+
+    fun nudge(behind: Double): Float {
+        if (inStep(behind)) return 1f
+        val strength = (kotlin.math.abs(behind) * 0.5).coerceIn(GENTLEST_NUDGE, STRONGEST_NUDGE)
+        return (if (behind > 0) 1 + strength else 1 - strength).toFloat()
     }
 
     fun catchUp(time: Double, elapsedMs: Long, duration: Double?): Double {

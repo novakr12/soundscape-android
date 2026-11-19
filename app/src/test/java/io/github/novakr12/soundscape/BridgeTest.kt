@@ -116,4 +116,19 @@ class BridgeTest {
         assertEquals(199.5, Bridge.catchUp(199.0, 3000, 200.0), 1e-9)
         assertEquals(3.0, Bridge.catchUp(-1.0, 3000, 0.2), 1e-9)
     }
+
+    @Test
+    fun nudgesThePhonePlayerIntoStepWithThePage() {
+        assertTrue(Bridge.inStep(0.02))
+        assertTrue(Bridge.inStep(-0.03))
+        assertFalse(Bridge.inStep(0.05))
+        assertEquals(1f, Bridge.nudge(0.01), 1e-6f)
+        assertEquals(1.05f, Bridge.nudge(0.04), 1e-6f)
+        assertEquals(1.2f, Bridge.nudge(0.4), 1e-6f)
+        assertEquals(1.25f, Bridge.nudge(0.9), 1e-6f)
+        assertEquals(0.9f, Bridge.nudge(-0.2), 1e-6f)
+        assertFalse(Bridge.jumpNeeded(0.9))
+        assertTrue(Bridge.jumpNeeded(1.5))
+        assertTrue(Bridge.jumpNeeded(-3.0))
+    }
 }
