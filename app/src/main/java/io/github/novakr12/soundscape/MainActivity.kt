@@ -54,6 +54,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var trouble: View
     private lateinit var server: String
     private var pageNative = false
+    private var listening: String? = null
     private val waitingForService = mutableListOf<RemoteCommand>()
     private var picking: ValueCallback<Array<Uri>>? = null
     private val main = Handler(Looper.getMainLooper())
@@ -511,14 +512,19 @@ class MainActivity : AppCompatActivity() {
         matchBarsToTheme()
     }
 
-    private fun listenToPage() {
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return
-        WebViewCompat.removeWebMessageListener(web, "soundscapeNative")
-        if (Settings(this).token == null) return
-        val origin = Bridge.originRule(server) ?: return
-        WebViewCompat.addWebMessageListener(web, "soundscapeNative", setOf(origin)) { _, message, _, isMainFrame, _ ->
-            if (isMainFrame) fromPage(message.data)
+    private fun listenToPage(): Boolean {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return false
+        val wanted = if (Settings(this).token != null) Bridge.originRule(server) else null
+        if (wanted == listening) return false
+        if (listening != null) WebViewCompat.removeWebMessageListener(web, NATIVE_CHANNEL)
+        if (wanted != null) {
+            WebViewCompat.addWebMessageListener(web, NATIVE_CHANNEL, setOf(wanted)) { _, message, _, isMainFrame, _ ->
+                if (isMainFrame) fromPage(message.data)
+            }
         }
+        listening = wanted
+        pageNative = false
+        return true
     }
 
     private fun fromPage(text: String?) {
@@ -562,7 +568,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (::web.isInitialized) listenToPage()
+        if (::web.isInitialized && listenToPage()) web.reload()
         val now = Settings(this).server
         if (now != null && now != server) {
             server = now
@@ -597,6 +603,7 @@ class MainActivity : AppCompatActivity() {
         private const val PAGE_TICK_MS = 1000L
         private const val HAND_BACK_STEP_MS = 50L
         private const val SERVICE_WAIT_MS = 100L
+        private const val NATIVE_CHANNEL = "soundscapeNative"
         private const val HAND_BACK_WITHIN_MS = 7000L
         private const val FOLLOW_SOON_MS = 500L
         private const val BACKGROUND_TICK_MS = 5000L
