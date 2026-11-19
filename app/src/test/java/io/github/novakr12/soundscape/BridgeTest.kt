@@ -150,6 +150,22 @@ class BridgeTest {
     }
 
     @Test
+    fun opensTheLocalChannelOnlyToTheServer() {
+        assertEquals("https://music.example.com", Bridge.originRule("https://music.example.com/"))
+        assertEquals("https://music.example.com:8443", Bridge.originRule("https://music.example.com:8443/app"))
+        assertEquals("http://192.168.1.5:3000", Bridge.originRule(" http://192.168.1.5:3000 "))
+        assertNull(Bridge.originRule("ftp://music.example.com"))
+        assertNull(Bridge.originRule("not a server"))
+    }
+
+    @Test
+    fun tellsThePageWhatThePhonesPlayerIsDoing() {
+        val script = Bridge.nativeReport("""{"id":"phone0001","state":{"playing":true}}""")
+        assertTrue(script.contains("window.soundscapeNativeReport"))
+        assertTrue(script.contains("""r({"id":"phone0001","state":{"playing":true}})"""))
+    }
+
+    @Test
     fun timesAPageReadFromTheMiddleOfItsRoundTrip() {
         assertEquals(1050L, Bridge.readMoment(1000, 1100))
         assertEquals(1000L, Bridge.readMoment(1000, 1000))

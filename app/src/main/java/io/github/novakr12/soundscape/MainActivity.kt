@@ -44,6 +44,7 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
+import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
@@ -52,6 +53,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var web: WebView
     private lateinit var trouble: View
     private lateinit var server: String
+    private var pageNative = false
+    private val waitingForService = mutableListOf<RemoteCommand>()
     private var picking: ValueCallback<Array<Uri>>? = null
     private val main = Handler(Looper.getMainLooper())
     private var controller: ListenableFuture<MediaController>? = null
@@ -126,6 +129,9 @@ class MainActivity : AppCompatActivity() {
         Playback.readPage = { reply ->
             web.evaluateJavascript(Bridge.READ) { result -> reply(Bridge.parse(result)) }
         }
+        Playback.reportToPage = { json ->
+            if (::web.isInitialized && visible) web.evaluateJavascript(Bridge.nativeReport(json), null)
+        }
         if (Settings(this).token != null) NoticeWorker.start(this)
         val app = applicationContext
         worker.execute {
@@ -165,6 +171,7 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         visible = true
+        if (pageNative) Playback.service?.tellPage()
         main.removeCallbacks(tick)
         main.post(tick)
     }
@@ -181,6 +188,8 @@ class MainActivity : AppCompatActivity() {
             followSettingsPage()
             followDownloads()
         }
+        if (pageNative) return
+        if (visible) web.evaluateJavascript(Bridge.NATIVE_PAGE) { if (it == "true") pageNative = true }
         val service = Playback.service
         if (service?.playingNatively == true) {
             pagePlaying = false
@@ -243,6 +252,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handOverToPhone() {
+        if (pageNative) return
         if (!Settings(this).backgroundPlayback) return
         val token = Settings(this).token ?: return
         val service = Playback.service ?: return
@@ -406,6 +416,7 @@ class MainActivity : AppCompatActivity() {
             userAgentString = "$userAgentString SoundscapeAndroid/${BuildConfig.VERSION_NAME}"
         }
         nameThisDevice()
+        listenToPage()
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val address = request.url.toString()
@@ -416,6 +427,7 @@ class MainActivity : AppCompatActivity() {
                         lastNotification = null
                     }
                     startNotifications()
+                    listenToPage()
                     Toast.makeText(this@MainActivity, R.string.connected, Toast.LENGTH_SHORT).show()
                     view.loadUrl(server)
                     return true
@@ -499,6 +511,46 @@ class MainActivity : AppCompatActivity() {
         matchBarsToTheme()
     }
 
+    private fun listenToPage() {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return
+        WebViewCompat.removeWebMessageListener(web, "soundscapeNative")
+        if (Settings(this).token == null) return
+        val origin = Bridge.originRule(server) ?: return
+        WebViewCompat.addWebMessageListener(web, "soundscapeNative", setOf(origin)) { _, message, _, isMainFrame, _ ->
+            if (isMainFrame) fromPage(message.data)
+        }
+    }
+
+    private fun fromPage(text: String?) {
+        val item = runCatching { JSONObject(text ?: return) }.getOrNull() ?: return
+        pageNative = true
+        if (item.optString("do") == "hello") {
+            Playback.service?.tellPage() ?: connectToService()
+            return
+        }
+        val command = Remote.command(item) ?: return
+        val service = Playback.service
+        if (service != null) {
+            service.obeyPage(command)
+            return
+        }
+        waitingForService.add(command)
+        connectToService()
+        main.postDelayed(::deliverWaiting, SERVICE_WAIT_MS)
+    }
+
+    private fun deliverWaiting() {
+        if (waitingForService.isEmpty()) return
+        val service = Playback.service
+        if (service == null) {
+            main.postDelayed(::deliverWaiting, SERVICE_WAIT_MS)
+            return
+        }
+        val waiting = waitingForService.toList()
+        waitingForService.clear()
+        waiting.forEach(service::obeyPage)
+    }
+
     private fun nameThisDevice() {
         deviceScript?.remove()
         deviceScript = null
@@ -510,10 +562,12 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (::web.isInitialized) listenToPage()
         val now = Settings(this).server
         if (now != null && now != server) {
             server = now
             nameThisDevice()
+            listenToPage()
             web.clearHistory()
             web.loadUrl(server)
         }
@@ -528,6 +582,7 @@ class MainActivity : AppCompatActivity() {
         main.removeCallbacks(tick)
         Playback.runInPage = null
         Playback.readPage = null
+        Playback.reportToPage = null
         Playback.service?.let { if (!it.playingNatively) it.showPage(null, server) }
         controller?.let { MediaController.releaseFuture(it) }
         worker.shutdown()
@@ -541,6 +596,7 @@ class MainActivity : AppCompatActivity() {
         const val EXTRA_PAGE = "page"
         private const val PAGE_TICK_MS = 1000L
         private const val HAND_BACK_STEP_MS = 50L
+        private const val SERVICE_WAIT_MS = 100L
         private const val HAND_BACK_WITHIN_MS = 7000L
         private const val FOLLOW_SOON_MS = 500L
         private const val BACKGROUND_TICK_MS = 5000L

@@ -33,6 +33,7 @@ object Playback {
     var service: PlaybackService? = null
     var runInPage: ((String) -> Unit)? = null
     var readPage: ((reply: (PageState?) -> Unit) -> Unit)? = null
+    var reportToPage: ((String) -> Unit)? = null
 }
 
 @OptIn(UnstableApi::class)
@@ -82,6 +83,33 @@ class PlaybackService : MediaLibraryService() {
         if (native != null || state.remote != null) return
         start(state, server, token, fromPage = true, catchUp = state.playing).since =
             Bridge.readMoment(readAt, SystemClock.elapsedRealtime())
+    }
+
+    fun obeyPage(command: RemoteCommand) {
+        native?.let {
+            it.obeyHere(command)
+            return
+        }
+        val take = when (command) {
+            is RemoteCommand.Take -> command
+            is RemoteCommand.Enqueue -> RemoteCommand.Take(listOf(command.track), 0, 0.0, true)
+            else -> return
+        }
+        val settings = Settings(this)
+        val server = settings.server ?: return
+        val volume = pagePlayer.shown?.volume ?: DEFAULT_VOLUME
+        val state = PageState(take.tracks, take.position, take.time, null, take.playing, volume, "off")
+        start(state, server, settings.token.orEmpty(), fromPage = false).player.playWhenReady = take.playing
+        tellPage()
+    }
+
+    fun tellPage() {
+        val json = native?.report() ?: Remote.report(
+            Settings(this).deviceId,
+            Remote.deviceName(Build.MODEL),
+            RemoteSnapshot(null, false, 0.0, null, pagePlayer.shown?.volume ?: DEFAULT_VOLUME),
+        )
+        Playback.reportToPage?.invoke(json)
     }
 
     fun playDownloads(tracks: List<BridgeTrack>, at: Int) {
@@ -357,7 +385,7 @@ class PlaybackService : MediaLibraryService() {
         fun volumeAt(index: Int) = (volume * (tracks.getOrNull(index)?.level ?: 1.0)).toFloat()
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            link?.reportSoon()
+            changed()
             if (!isPlaying || live) return
             if (!syncing) {
                 goLive()
@@ -375,7 +403,7 @@ class PlaybackService : MediaLibraryService() {
             before = null
             counted = false
             if (live) announce()
-            link?.reportSoon()
+            changed()
         }
 
         override fun onPositionDiscontinuity(
@@ -383,20 +411,20 @@ class PlaybackService : MediaLibraryService() {
             newPosition: Player.PositionInfo,
             reason: Int,
         ) {
-            link?.reportSoon()
+            changed()
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
-            link?.reportSoon()
+            changed()
         }
 
         override fun onRepeatModeChanged(repeatMode: Int) {
-            link?.reportSoon()
+            changed()
         }
 
         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
             if (reason != Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) return
-            link?.reportSoon()
+            changed()
             val now = (0 until player.mediaItemCount).map {
                 Car.trackFrom(player.getMediaItemAt(it).mediaMetadata.extras?.getString(CarLibrary.TRACK))
             }
@@ -416,6 +444,19 @@ class PlaybackService : MediaLibraryService() {
             player.volume = volumeAt(position)
             player.prepare()
             player.playWhenReady = playing
+        }
+
+        fun obeyHere(command: RemoteCommand) {
+            obey(command)
+            changed()
+        }
+
+        fun report(): String =
+            Remote.report(Settings(this@PlaybackService).deviceId, Remote.deviceName(Build.MODEL), snapshot())
+
+        private fun changed() {
+            link?.reportSoon()
+            Playback.reportToPage?.invoke(report())
         }
 
         private fun connect() {
@@ -518,6 +559,7 @@ class PlaybackService : MediaLibraryService() {
             main.removeCallbacks(sync)
             player.removeListener(this)
             player.release()
+            main.post { tellPage() }
         }
     }
 

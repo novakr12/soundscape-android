@@ -28,7 +28,7 @@ If the server can't be reached, the app shows a page with **Try again** and **Ch
 - Links to other sites (MusicBrainz, Wikipedia, Last.fm…) open in your browser
 - Imports can pick files from the phone, and exports download to the Downloads folder
 - While music plays, the usual media notification, the lock screen, Bluetooth and headset buttons control Soundscape's player
-- When you leave the app or lock the screen, Android's own media player takes over from the same song and second, so playback keeps going reliably: it pauses for calls and other apps, stops when headphones are unplugged, plays albums without gaps, and carries on through the queue. Plays still count, the same way as in the page. When you come back, the page takes over again where Android's player is. This needs the app to be connected (see above); without it, the page keeps playing in the background on its own, as in Chrome.
+- Once the app is connected, all music plays through Android's own media player, the way Spotify and Deezer do it; the page is only the remote control. Leaving the app, locking the screen and coming back never interrupt the song. The player pauses for calls and other apps, stops when headphones are unplugged, plays albums without gaps and carries on through the queue, and plays count as usual. Without a connection, or with a Soundscape server older than this app, the page plays the music itself and Android's player takes over when you leave the app, as before.
 
 ## Downloads
 

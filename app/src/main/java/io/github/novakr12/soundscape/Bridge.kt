@@ -102,6 +102,18 @@ object Bridge {
         )
     }
 
+    const val NATIVE_PAGE =
+        "(() => { const p = window.soundscapePlayer; return Boolean(p && p.native === true); })()"
+
+    fun nativeReport(json: String) = "(() => { const r = window.soundscapeNativeReport; if (r) r($json); })()"
+
+    fun originRule(server: String): String? {
+        val uri = runCatching { java.net.URI(server.trim()) }.getOrNull() ?: return null
+        val scheme = uri.scheme?.lowercase()?.takeIf { it == "http" || it == "https" } ?: return null
+        val host = uri.host?.takeIf { it.isNotEmpty() } ?: return null
+        return if (uri.port == -1) "$scheme://$host" else "$scheme://$host:${uri.port}"
+    }
+
     fun handBackDone(page: PageState?): Boolean {
         if (page == null) return false
         val handing = page.handing ?: return true
