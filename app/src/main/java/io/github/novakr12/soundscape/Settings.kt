@@ -22,6 +22,10 @@ class Settings(context: Context) {
         get() = stored.getBoolean(AUTOPLAY, false)
         set(value) = stored.edit { putBoolean(AUTOPLAY, value) }
 
+    var shuffle: Boolean
+        get() = stored.getBoolean(SHUFFLE, false)
+        set(value) = stored.edit { putBoolean(SHUFFLE, value) }
+
     var backgroundPlayback: Boolean
         get() = stored.getBoolean(BACKGROUND, true)
         set(value) = stored.edit { putBoolean(BACKGROUND, value) }
@@ -97,6 +101,7 @@ class Settings(context: Context) {
         const val NOTIFICATIONS = "notifications"
         const val BACKGROUND = "background_playback"
         const val AUTOPLAY = "autoplay"
+        const val SHUFFLE = "shuffle"
         const val WIFI_ONLY = "downloads_wifi_only"
         const val DEVICE_ID = "device_id"
         const val WEEKLY_RECAP = "weekly_recap"

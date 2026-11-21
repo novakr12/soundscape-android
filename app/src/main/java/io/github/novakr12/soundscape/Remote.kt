@@ -17,6 +17,7 @@ sealed class RemoteCommand {
     data class Send(val to: String) : RemoteCommand()
     data class Enqueue(val track: BridgeTrack, val next: Boolean) : RemoteCommand()
     data class Repeat(val mode: String) : RemoteCommand()
+    data class Shuffle(val on: Boolean) : RemoteCommand()
     data class Jump(val ahead: Int) : RemoteCommand()
 }
 
@@ -28,6 +29,7 @@ data class RemoteSnapshot(
     val volume: Double,
     val repeat: String? = null,
     val upNext: List<BridgeTrack> = emptyList(),
+    val shuffle: Boolean? = null,
 )
 
 class EventReader {
@@ -92,6 +94,7 @@ object Remote {
             .put("volume", snapshot.volume.coerceIn(0.0, 1.0))
             .put("blocked", false)
             .put("repeat", snapshot.repeat?.takeIf { it in REPEAT_MODES } ?: JSONObject.NULL)
+            .put("shuffle", snapshot.shuffle ?: JSONObject.NULL)
             .put(
                 "upNext",
                 JSONArray().apply {
@@ -155,6 +158,11 @@ object Remote {
             "send" -> item.optString("to").takeIf { isDeviceId(it) }?.let { RemoteCommand.Send(it) }
             "take" -> take(item)
             "repeat" -> item.optString("mode").takeIf { it in REPEAT_MODES }?.let { RemoteCommand.Repeat(it) }
+            "shuffle" -> when (item.optString("on")) {
+                "true" -> RemoteCommand.Shuffle(true)
+                "false" -> RemoteCommand.Shuffle(false)
+                else -> null
+            }
             "jump" -> item.optInt("ahead", 0).takeIf { it in 1..MOST_UP_NEXT }?.let { RemoteCommand.Jump(it) }
             "enqueue" -> item.optJSONObject("track")?.let(::track)?.let {
                 RemoteCommand.Enqueue(it, item.optBoolean("next", false))

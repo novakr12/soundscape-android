@@ -162,6 +162,7 @@ class PlaybackService : MediaLibraryService() {
         player.volume = if (catchUp) 0f else running.volumeAt(state.position)
         if (!fromPage) session.player = player
         player.prepare()
+        if (Settings(this).shuffle) running.setShuffle(true)
         running.syncing = catchUp
         running.since = SystemClock.elapsedRealtime()
         player.playWhenReady = true
@@ -288,6 +289,7 @@ class PlaybackService : MediaLibraryService() {
         private var counted = false
         private var announced = -1
         private var refilledAfter: String? = null
+        private var unshuffled: List<BridgeTrack>? = null
         private val tick = object : Runnable {
             override fun run() {
                 follow()
@@ -458,10 +460,45 @@ class PlaybackService : MediaLibraryService() {
             tracks = next
             replaced = true
             announced = -1
+            unshuffled = null
             player.setMediaItems(itemsFor(server, next), position, (time * 1000).toLong())
             player.volume = volumeAt(position)
             player.prepare()
             player.playWhenReady = playing
+            if (Settings(this@PlaybackService).shuffle) setShuffle(true)
+        }
+
+        fun setShuffle(on: Boolean) {
+            val from = player.currentMediaItemIndex + 1
+            if (from > tracks.size) return
+            val original = unshuffled
+            val wanted = when {
+                on && original == null -> {
+                    unshuffled = tracks.drop(from)
+                    Shuffle.shuffled(tracks.drop(from))
+                }
+                !on && original != null -> {
+                    unshuffled = null
+                    Shuffle.restored(original, tracks.drop(from))
+                }
+                else -> return
+            }
+            val order = tracks.toMutableList()
+            for ((at, to) in Shuffle.moves(order, wanted, from)) {
+                order.add(to, order.removeAt(at))
+                player.moveMediaItem(at, to)
+            }
+            tracks = order
+            replaced = true
+        }
+
+        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+            if (!shuffleModeEnabled) return
+            player.shuffleModeEnabled = false
+            val on = unshuffled == null
+            Settings(this@PlaybackService).shuffle = on
+            setShuffle(on)
+            changed()
         }
 
         fun obeyHere(command: RemoteCommand) {
@@ -497,7 +534,16 @@ class PlaybackService : MediaLibraryService() {
                 else -> "off"
             }
             val upNext = tracks.drop(index + 1).take(Remote.MOST_UP_NEXT)
-            return RemoteSnapshot(track, going, player.currentPosition / 1000.0, length, volume, repeat, upNext)
+            return RemoteSnapshot(
+                track,
+                going,
+                player.currentPosition / 1000.0,
+                length,
+                volume,
+                repeat,
+                upNext,
+                unshuffled != null,
+            )
         }
 
         private fun obey(command: RemoteCommand) {
@@ -519,6 +565,10 @@ class PlaybackService : MediaLibraryService() {
                 }
                 is RemoteCommand.Take -> replace(command.tracks, command.position, command.time, command.playing)
                 is RemoteCommand.Repeat -> player.repeatMode = Bridge.repeatMode(command.mode)
+                is RemoteCommand.Shuffle -> {
+                    Settings(this@PlaybackService).shuffle = command.on
+                    setShuffle(command.on)
+                }
                 is RemoteCommand.Jump -> {
                     val target = player.currentMediaItemIndex + command.ahead
                     if (target < player.mediaItemCount) player.seekTo(target, 0)
@@ -527,6 +577,7 @@ class PlaybackService : MediaLibraryService() {
                     val count = player.mediaItemCount
                     val at = if (command.next) (player.currentMediaItemIndex + 1).coerceIn(0, count) else count
                     tracks = tracks.toMutableList().apply { add(at.coerceAtMost(size), command.track) }
+                    unshuffled = unshuffled?.let { if (command.next) listOf(command.track) + it else it + command.track }
                     replaced = true
                     player.addMediaItem(at, CarLibrary.playableItem(this@PlaybackService, server, command.track))
                 }
