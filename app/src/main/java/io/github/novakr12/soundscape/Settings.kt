@@ -18,6 +18,10 @@ class Settings(context: Context) {
         get() = stored.getString(USER, null)
         set(value) = stored.edit { putString(USER, value) }
 
+    var autoplay: Boolean
+        get() = stored.getBoolean(AUTOPLAY, false)
+        set(value) = stored.edit { putBoolean(AUTOPLAY, value) }
+
     var backgroundPlayback: Boolean
         get() = stored.getBoolean(BACKGROUND, true)
         set(value) = stored.edit { putBoolean(BACKGROUND, value) }
@@ -92,6 +96,7 @@ class Settings(context: Context) {
         const val ASKED = "asked_to_connect"
         const val NOTIFICATIONS = "notifications"
         const val BACKGROUND = "background_playback"
+        const val AUTOPLAY = "autoplay"
         const val WIFI_ONLY = "downloads_wifi_only"
         const val DEVICE_ID = "device_id"
         const val WEEKLY_RECAP = "weekly_recap"

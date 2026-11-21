@@ -287,10 +287,27 @@ class PlaybackService : MediaLibraryService() {
         private var before: Double? = null
         private var counted = false
         private var announced = -1
+        private var refilledAfter: String? = null
         private val tick = object : Runnable {
             override fun run() {
                 follow()
+                keepGoing()
                 main.postDelayed(this, TICK_MS)
+            }
+        }
+
+        private fun keepGoing() {
+            val index = player.currentMediaItemIndex
+            val left = player.mediaItemCount - index - 1
+            val autoplay = Settings(this@PlaybackService).autoplay
+            if (!Radio.needsMore(autoplay, player.repeatMode == Player.REPEAT_MODE_OFF, left)) return
+            val seed = tracks.getOrNull(index) ?: return
+            if (seed.trackId == refilledAfter || token.isEmpty() || server == OFFLINE) return
+            refilledAfter = seed.trackId
+            val exclude = tracks.drop(index).mapNotNull { it.songId }
+            reporter.execute {
+                val songs = runCatching { Radio.fetch(server, token, seed.trackId, exclude) }.getOrDefault(emptyList())
+                main.post { songs.forEach { obey(RemoteCommand.Enqueue(it, false)) } }
             }
         }
         private var syncStarted = 0L

@@ -534,6 +534,10 @@ class MainActivity : AppCompatActivity() {
             Playback.service?.tellPage() ?: connectToService()
             return
         }
+        if (item.optString("do") == "autoplay") {
+            Settings(this).autoplay = item.optBoolean("on")
+            return
+        }
         val command = Remote.command(item) ?: return
         val service = Playback.service
         if (service != null) {
