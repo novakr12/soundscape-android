@@ -305,8 +305,9 @@ class PlaybackService : MediaLibraryService() {
             if (seed.trackId == refilledAfter || token.isEmpty() || server == OFFLINE) return
             refilledAfter = seed.trackId
             val exclude = tracks.drop(index).mapNotNull { it.songId }
+            val body = Radio.body(seed, exclude, tracks.map { it.trackId })
             reporter.execute {
-                val songs = runCatching { Radio.fetch(server, token, seed.trackId, exclude) }.getOrDefault(emptyList())
+                val songs = runCatching { Radio.fetch(server, token, body) }.getOrDefault(emptyList())
                 main.post { songs.forEach { obey(RemoteCommand.Enqueue(it, false)) } }
             }
         }

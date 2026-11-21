@@ -18,10 +18,15 @@ class RadioTest {
 
     @Test
     fun sendsTheSongAndWhatIsAlreadyQueued() {
-        val body = JSONObject(Radio.body("band-one", listOf("nd-1", "nd-2")))
+        val seed = Radio.songs("""{"songs":[{"trackId":"band-one","songId":"nd-1","title":"One","artist":"Band"}]}""")[0]
+        val body = JSONObject(Radio.body(seed, listOf("nd-1", "nd-2"), listOf("earlier", "band-one")))
         assertEquals("band-one", body.getString("trackId"))
+        assertEquals("Band", body.getString("artist"))
+        assertEquals("One", body.getString("title"))
+        assertTrue(body.getBoolean("continuing"))
         assertEquals(2, body.getJSONArray("exclude").length())
         assertEquals("nd-2", body.getJSONArray("exclude").getString(1))
+        assertEquals("earlier", body.getJSONArray("skipTracks").getString(0))
     }
 
     @Test
