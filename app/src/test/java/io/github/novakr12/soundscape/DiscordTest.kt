@@ -38,6 +38,7 @@ class DiscordTest {
         assertEquals("7", message.getString("nonce"))
         assertEquals(42, message.getJSONObject("args").getInt("pid"))
         val sent = message.getJSONObject("args").getJSONObject("activity")
+        assertEquals("Soundscape", sent.getString("name"))
         assertEquals(2, sent.getInt("type"))
         assertEquals(0, sent.getInt("status_display_type"))
         assertEquals("Need It", sent.getString("details"))

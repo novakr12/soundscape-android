@@ -39,6 +39,10 @@ data class DiscordSource(
 object Discord {
     const val LOGO = "https://raw.githubusercontent.com/novakr12/soundscape-desktop/main/icons/icon.png"
     const val UNKNOWN_ALBUM = "Unknown album"
+
+    // Discord on Android doesn't fill this in from the app id, so without it the status reads "Listening to Game".
+    const val APP_NAME = "Soundscape"
+
     const val DRIFT_MS = 2_000L
     const val RETRY_AFTER_MS = 30_000L
     const val IDLE_DISCONNECT_MS = 60_000L
@@ -114,6 +118,7 @@ object Discord {
                 .put("large_image", item.image)
                 .put("large_text", short(item.album))
             JSONObject()
+                .put("name", APP_NAME)
                 .put("type", TYPE_LISTENING)
                 .put("status_display_type", STATUS_DISPLAY_NAME)
                 .put("details", short(item.song.title))
