@@ -1,6 +1,7 @@
 package io.github.novakr12.soundscape
 
 import android.content.Intent
+import android.content.res.Configuration
 import android.os.Bundle
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
@@ -10,8 +11,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.Executors
 
 class SetupActivity : AppCompatActivity() {
@@ -26,6 +25,7 @@ class SetupActivity : AppCompatActivity() {
             view.updatePadding(top = bars.top, bottom = bars.bottom, left = bars.left, right = bars.right)
             insets
         }
+        matchBarsToTheme()
         val address = findViewById<EditText>(R.id.server_address)
         val status = findViewById<TextView>(R.id.setup_status)
         val connect = findViewById<Button>(R.id.connect)
@@ -40,6 +40,7 @@ class SetupActivity : AppCompatActivity() {
                 worker.execute {
                     val problem = check(server)
                     runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
                         connect.isEnabled = true
                         if (problem == null) {
                             val settings = Settings(this)
@@ -61,19 +62,23 @@ class SetupActivity : AppCompatActivity() {
         }
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        matchBarsToTheme()
+    }
+
     private fun check(server: String): String? = try {
-        val connection = URL(Server.infoAddress(server)).openConnection() as HttpURLConnection
-        connection.connectTimeout = 10_000
-        connection.readTimeout = 10_000
-        try {
-            val body = connection.inputStream.bufferedReader().use { it.readText() }
-            if (connection.responseCode == 200 && Server.looksLikeSoundscape(body)) {
-                null
-            } else {
-                getString(R.string.setup_not_soundscape)
-            }
-        } finally {
-            connection.disconnect()
+        val answer = Net.get(
+            address = Server.infoAddress(server),
+            connectTimeoutMs = 10_000,
+            readTimeoutMs = 10_000,
+            accept = "application/json",
+            maxBytes = MAX_INFO_BYTES,
+        )
+        if (answer.status == 200 && answer.body != null && Server.looksLikeSoundscape(answer.body)) {
+            null
+        } else {
+            getString(R.string.setup_not_soundscape)
         }
     } catch (error: Exception) {
         getString(R.string.setup_unreachable, error.localizedMessage ?: error.javaClass.simpleName)
@@ -82,5 +87,9 @@ class SetupActivity : AppCompatActivity() {
     override fun onDestroy() {
         worker.shutdown()
         super.onDestroy()
+    }
+
+    private companion object {
+        const val MAX_INFO_BYTES = 64 * 1024
     }
 }

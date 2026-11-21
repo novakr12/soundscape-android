@@ -2,8 +2,6 @@ package io.github.novakr12.soundscape
 
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 
 object Radio {
     const val REFILL_BELOW = 3
@@ -28,19 +26,14 @@ object Radio {
     }
 
     fun fetch(server: String, token: String, body: String): List<BridgeTrack> {
-        val connection = URL("$server/api/radio").openConnection() as HttpURLConnection
-        return try {
-            connection.requestMethod = "POST"
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 20_000
-            connection.doOutput = true
-            connection.setRequestProperty("Authorization", "Token $token")
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.outputStream.use { it.write(body.toByteArray()) }
-            if (connection.responseCode !in 200..299) return emptyList()
-            songs(connection.inputStream.bufferedReader().use { it.readText() })
-        } finally {
-            connection.disconnect()
-        }
+        val answer = Net.postJson(
+            address = "$server/api/radio",
+            body = body,
+            token = token,
+            connectTimeoutMs = 10_000,
+            readTimeoutMs = 20_000,
+        )
+        if (answer.status !in 200..299 || answer.body == null) return emptyList()
+        return songs(answer.body)
     }
 }

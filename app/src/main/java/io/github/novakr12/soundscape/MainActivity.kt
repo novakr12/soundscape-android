@@ -11,11 +11,11 @@ import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.MediaStore
-import android.os.Environment
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
@@ -35,19 +35,17 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.net.toUri
 import androidx.core.view.ViewCompat
-import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
 import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
-import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 class MainActivity : AppCompatActivity() {
     private lateinit var web: WebView
@@ -65,8 +63,29 @@ class MainActivity : AppCompatActivity() {
     private var downloadsShown: Pair<String, String>? = null
     private val worker = Executors.newSingleThreadExecutor()
     private var deviceScript: ScriptHandler? = null
+
+    private val runInPage: (String) -> Unit = { script ->
+        if (!isDestroyed && ::web.isInitialized) {
+            web.evaluateJavascript(script, null)
+            followSoon()
+        }
+    }
+    private val readPage: ((PageState?) -> Unit) -> Unit = { reply ->
+        if (isDestroyed || !::web.isInitialized) {
+            reply(null)
+        } else {
+            web.evaluateJavascript(Bridge.READ) { result -> reply(Bridge.parse(result)) }
+        }
+    }
+    private val reportToPage: (String) -> Unit = { json ->
+        if (!isDestroyed && ::web.isInitialized && visible) {
+            web.evaluateJavascript(Bridge.nativeReport(json), null)
+        }
+    }
+
     private val tick = object : Runnable {
         override fun run() {
+            if (isDestroyed) return
             followPage()
             if (visible || pagePlaying) {
                 main.postDelayed(this, PAGE_TICK_MS)
@@ -77,6 +96,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun canPlayInBackground() = Settings(this).let { it.backgroundPlayback && it.token != null }
+
+    private fun onWorker(work: () -> Unit) {
+        try {
+            worker.execute(work)
+        } catch (_: RejectedExecutionException) {
+        }
+    }
 
     private val askToNotify = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
@@ -123,19 +149,13 @@ class MainActivity : AppCompatActivity() {
                 if (web.canGoBack()) web.goBack() else moveTaskToBack(true)
             }
         })
-        Playback.runInPage = { script ->
-            web.evaluateJavascript(script, null)
-            followSoon()
-        }
-        Playback.readPage = { reply ->
-            web.evaluateJavascript(Bridge.READ) { result -> reply(Bridge.parse(result)) }
-        }
-        Playback.reportToPage = { json ->
-            if (::web.isInitialized && visible) web.evaluateJavascript(Bridge.nativeReport(json), null)
-        }
-        if (Settings(this).token != null) NoticeWorker.start(this)
+        Playback.runInPage = runInPage
+        Playback.readPage = readPage
+        Playback.reportToPage = reportToPage
+        val settings = Settings(this)
+        if (settings.token != null && settings.notifications) NoticeWorker.start(this)
         val app = applicationContext
-        worker.execute {
+        onWorker {
             OfflinePlays.send(app)
             NoticeWorker.checkForUpdate(app, Settings(app))
         }
@@ -152,8 +172,7 @@ class MainActivity : AppCompatActivity() {
         }
         val page = intent?.takeIf { it.action == ACTION_OPEN }?.getStringExtra(EXTRA_PAGE)
         if (page != null && page.startsWith("/") && !page.startsWith("//")) return "$server$page"
-        val asked = intent?.action == ACTION_CONNECT
-        if (asked || (settings.token == null && !settings.askedToConnect)) {
+        if (settings.token == null && !settings.askedToConnect) {
             settings.askedToConnect = true
             return Bridge.connectAddress(server, "Android (${Build.MODEL})")
         }
@@ -162,7 +181,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        val known = intent.action == ACTION_CONNECT || intent.action == ACTION_OPEN ||
+        val known = intent.action == ACTION_OPEN ||
             intent.action == MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH
         if (known && ::web.isInitialized) {
             web.loadUrl(firstPage(intent))
@@ -184,13 +203,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun followPage() {
-        if (!::web.isInitialized) return
+        if (isDestroyed || !::web.isInitialized) return
         if (visible) {
             followSettingsPage()
             followDownloads()
         }
         if (pageNative) return
-        if (visible) web.evaluateJavascript(Bridge.NATIVE_PAGE) { if (it == "true") pageNative = true }
+        if (visible) {
+            web.evaluateJavascript(Bridge.NATIVE_PAGE) {
+                if (!isDestroyed && it == "true") pageNative = true
+            }
+        }
         val service = Playback.service
         if (service?.playingNatively == true) {
             pagePlaying = false
@@ -199,6 +222,7 @@ class MainActivity : AppCompatActivity() {
         }
         val asked = SystemClock.elapsedRealtime()
         web.evaluateJavascript(Bridge.READ) { result ->
+            if (isDestroyed) return@evaluateJavascript
             val state = Bridge.parse(result)
             val wasPlaying = pagePlaying
             pagePlaying = state?.playing == true
@@ -215,14 +239,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun followSoon() {
+        if (isDestroyed) return
         main.removeCallbacks(tick)
         main.postDelayed(tick, FOLLOW_SOON_MS)
     }
 
     private fun handBackToPage(service: PlaybackService) {
+        if (isDestroyed || !::web.isInitialized) return
         val back = service.handBackState() ?: return
         web.evaluateJavascript(Bridge.handBack(back)) { result ->
-            if (result != "true") return@evaluateJavascript
+            if (isDestroyed || result != "true") return@evaluateJavascript
             if (back.at == null) {
                 service.finishHandBack()
                 return@evaluateJavascript
@@ -234,14 +260,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun watchHandBack(service: PlaybackService, started: Long) {
         main.postDelayed({
-            if (!service.handingBack) return@postDelayed
+            if (isDestroyed || !::web.isInitialized || !service.handingBack) return@postDelayed
             if (!visible) {
                 web.evaluateJavascript(Bridge.command("pause"), null)
                 service.abandonHandBack()
                 return@postDelayed
             }
             web.evaluateJavascript(Bridge.READ) { result ->
-                if (!service.handingBack) return@evaluateJavascript
+                if (isDestroyed || !service.handingBack) return@evaluateJavascript
                 val waited = SystemClock.elapsedRealtime() - started
                 if (Bridge.handBackDone(Bridge.parse(result)) || waited > HAND_BACK_WITHIN_MS) {
                     service.finishHandBack()
@@ -253,20 +279,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handOverToPhone() {
-        if (pageNative) return
+        if (pageNative || isDestroyed || !::web.isInitialized) return
         if (!Settings(this).backgroundPlayback) return
         val token = Settings(this).token ?: return
         val service = Playback.service ?: return
-        if (service.playingNatively || !::web.isInitialized) return
+        if (service.playingNatively) return
         val asked = SystemClock.elapsedRealtime()
         web.evaluateJavascript(Bridge.READ) { result ->
+            if (isDestroyed) return@evaluateJavascript
             val state = Bridge.parse(result) ?: return@evaluateJavascript
             if (state.playing && state.remote == null && !visible) service.takeOver(state, server, token, asked)
         }
     }
 
     private fun followDownloads() {
+        if (isDestroyed || !::web.isInitialized) return
         web.evaluateJavascript(DownloadData.read()) { result ->
+            if (isDestroyed || !::web.isInitialized) return@evaluateJavascript
             val ask = DownloadData.parse(result) ?: return@evaluateJavascript
             for (request in ask.requests) {
                 when (request.kind) {
@@ -286,7 +315,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun followSettingsPage() {
-        web.evaluateJavascript(SettingsPage.READ) { result ->
+        if (isDestroyed || !::web.isInitialized) return
+        web.evaluateJavascript(SettingsPage.read(server)) { result ->
+            if (isDestroyed || !::web.isInitialized) return@evaluateJavascript
             val ask = SettingsPage.parse(result)
             if (ask == null) {
                 settingsShown = null
@@ -316,6 +347,8 @@ class MainActivity : AppCompatActivity() {
             streakReminder = settings.streakReminder,
             updateNotice = settings.updateNotice,
             update = settings.updateAvailable?.takeIf { Extras.newer(BuildConfig.VERSION_NAME, it) },
+            discord = settings.discord,
+            discordAppId = settings.discordAppId,
         )
     }
 
@@ -332,8 +365,12 @@ class MainActivity : AppCompatActivity() {
                     if (command.value) {
                         settings.updateCheckedAt = 0
                         val app = applicationContext
-                        worker.execute { NoticeWorker.checkForUpdate(app, Settings(app)) }
+                        onWorker { NoticeWorker.checkForUpdate(app, Settings(app)) }
                     }
+                }
+                SettingsPage.OPTION_DISCORD -> {
+                    settings.discord = command.value
+                    Playback.service?.refreshDiscord()
                 }
                 SettingsPage.OPTION_NOTIFICATIONS -> {
                     settings.notifications = command.value
@@ -344,6 +381,14 @@ class MainActivity : AppCompatActivity() {
                         startNotifications()
                     }
                 }
+            }
+            is SettingsCommand.DiscordApp -> {
+                val id = command.id.trim()
+                if (id.isNotEmpty() && !Discord.validAppId(id)) {
+                    return getString(R.string.discord_bad_app_id)
+                }
+                settings.discordAppId = id.ifEmpty { null }
+                Playback.service?.refreshDiscord()
             }
             SettingsCommand.Connect -> web.loadUrl(Bridge.connectAddress(server, "Android (${Build.MODEL})"))
             SettingsCommand.Disconnect -> disconnect()
@@ -371,20 +416,17 @@ class MainActivity : AppCompatActivity() {
         val settings = Settings(this)
         val token = settings.token ?: return
         val home = server
-        worker.execute {
-            runCatching {
-                val connection = URL("$home/api/token").openConnection() as HttpURLConnection
-                connection.requestMethod = "DELETE"
-                connection.connectTimeout = 10_000
-                connection.readTimeout = 10_000
-                connection.setRequestProperty("Authorization", "Token $token")
-                connection.responseCode
-                connection.disconnect()
-            }
+        onWorker {
+            runCatching { Net.delete("$home/api/token", token = token) }
         }
         NoticeWorker.stop(this)
         settings.forgetConnection()
         settings.askedToConnect = true
+        waitingForService.clear()
+        Playback.service?.stopNative()
+        Playback.service?.clearLibrary()
+        Playback.service?.refreshDiscord()
+        if (::web.isInitialized) listenToPage()
     }
 
     private fun startNotifications() {
@@ -414,24 +456,27 @@ class MainActivity : AppCompatActivity() {
             domStorageEnabled = true
             mediaPlaybackRequiresUserGesture = false
             setSupportMultipleWindows(false)
-            userAgentString = "$userAgentString SoundscapeAndroid/${BuildConfig.VERSION_NAME}"
+            userAgentString = "$userAgentString ${Net.userAgent}"
         }
         nameThisDevice()
         listenToPage()
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val address = request.url.toString()
-                Bridge.readToken(server, address)?.let { (token, user) ->
-                    Settings(this@MainActivity).apply {
-                        this.token = token
-                        this.user = user
-                        lastNotification = null
+                val currentUrl = view.url
+                if (request.isForMainFrame && (currentUrl == null || Server.isOwnPage(server, currentUrl))) {
+                    Bridge.readToken(server, address)?.let { (token, user) ->
+                        val settings = Settings(this@MainActivity).apply {
+                            this.token = token
+                            this.user = user
+                            lastNotification = null
+                        }
+                        if (settings.notifications) startNotifications()
+                        listenToPage()
+                        Toast.makeText(this@MainActivity, R.string.connected, Toast.LENGTH_SHORT).show()
+                        view.loadUrl(server)
+                        return true
                     }
-                    startNotifications()
-                    listenToPage()
-                    Toast.makeText(this@MainActivity, R.string.connected, Toast.LENGTH_SHORT).show()
-                    view.loadUrl(server)
-                    return true
                 }
                 if (Server.isOwnPage(server, address)) return false
                 openOutside(request.url)
@@ -477,16 +522,24 @@ class MainActivity : AppCompatActivity() {
             }
         }
         web.setDownloadListener { address, agent, disposition, kind, _ ->
+            val uri = runCatching { address.toUri() }.getOrNull() ?: return@setDownloadListener
+            val scheme = uri.scheme?.lowercase()
+            if (scheme != "http" && scheme != "https") return@setDownloadListener
             val name = URLUtil.guessFileName(address, disposition, kind)
-            val request = DownloadManager.Request(Uri.parse(address))
-                .addRequestHeader("Cookie", CookieManager.getInstance().getCookie(address))
-                .addRequestHeader("User-Agent", agent)
+            val request = DownloadManager.Request(uri)
                 .setMimeType(kind)
                 .setTitle(name)
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
-            getSystemService(DownloadManager::class.java).enqueue(request)
-            Toast.makeText(this, getString(R.string.downloading, name), Toast.LENGTH_SHORT).show()
+            CookieManager.getInstance().getCookie(address)?.takeIf { it.isNotEmpty() }?.let {
+                request.addRequestHeader("Cookie", it)
+            }
+            if (!agent.isNullOrBlank()) request.addRequestHeader("User-Agent", agent)
+            val queued = runCatching {
+                getSystemService(DownloadManager::class.java).enqueue(request)
+                true
+            }.getOrDefault(false)
+            if (queued) Toast.makeText(this, getString(R.string.downloading, name), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -495,15 +548,6 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(Intent.ACTION_VIEW, address))
         } catch (_: ActivityNotFoundException) {
             Toast.makeText(this, R.string.no_app_for_link, Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun matchBarsToTheme() {
-        val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
-            Configuration.UI_MODE_NIGHT_YES
-        WindowCompat.getInsetsController(window, window.decorView).apply {
-            isAppearanceLightStatusBars = !night
-            isAppearanceLightNavigationBars = !night
         }
     }
 
@@ -528,6 +572,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun fromPage(text: String?) {
+        if (isDestroyed) return
         val item = runCatching { JSONObject(text ?: return) }.getOrNull() ?: return
         pageNative = true
         if (item.optString("do") == "hello") {
@@ -550,7 +595,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun deliverWaiting() {
-        if (waitingForService.isEmpty()) return
+        if (isDestroyed || waitingForService.isEmpty()) return
         val service = Playback.service
         if (service == null) {
             main.postDelayed(::deliverWaiting, SERVICE_WAIT_MS)
@@ -572,14 +617,21 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (::web.isInitialized && listenToPage()) web.reload()
+        if (!::web.isInitialized) return
         val now = Settings(this).server
         if (now != null && now != server) {
             server = now
+            waitingForService.clear()
+            settingsShown = null
+            downloadsShown = null
+            Playback.service?.stopNative()
+            Playback.service?.clearLibrary()
             nameThisDevice()
             listenToPage()
             web.clearHistory()
             web.loadUrl(server)
+        } else if (listenToPage()) {
+            web.reload()
         }
     }
 
@@ -589,10 +641,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        main.removeCallbacks(tick)
-        Playback.runInPage = null
-        Playback.readPage = null
-        Playback.reportToPage = null
+        main.removeCallbacksAndMessages(null)
+        waitingForService.clear()
+        if (Playback.runInPage === runInPage) Playback.runInPage = null
+        if (Playback.readPage === readPage) Playback.readPage = null
+        if (Playback.reportToPage === reportToPage) Playback.reportToPage = null
         Playback.service?.let { if (!it.playingNatively) it.showPage(null, server) }
         controller?.let { MediaController.releaseFuture(it) }
         worker.shutdown()
@@ -611,6 +664,5 @@ class MainActivity : AppCompatActivity() {
         private const val HAND_BACK_WITHIN_MS = 7000L
         private const val FOLLOW_SOON_MS = 500L
         private const val BACKGROUND_TICK_MS = 5000L
-        private const val ACTION_CONNECT = "io.github.novakr12.soundscape.CONNECT"
     }
 }

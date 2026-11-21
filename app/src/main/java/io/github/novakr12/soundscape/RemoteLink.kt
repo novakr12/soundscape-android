@@ -2,8 +2,8 @@ package io.github.novakr12.soundscape
 
 import android.os.Handler
 import android.os.Looper
+import org.json.JSONObject
 import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import kotlin.concurrent.thread
@@ -28,6 +28,7 @@ class RemoteLink(
 
     private val heartbeat = object : Runnable {
         override fun run() {
+            if (!running) return
             reportNow()
             main.postDelayed(this, Remote.HEARTBEAT_MS)
         }
@@ -43,10 +44,11 @@ class RemoteLink(
 
     fun stop() {
         running = false
-        main.removeCallbacks(heartbeat)
-        main.removeCallbacks(soon)
-        connection?.disconnect()
+        main.removeCallbacksAndMessages(null)
+        val active = connection
+        connection = null
         listener?.interrupt()
+        if (active != null) disconnectOffMain(active)
         posts.shutdown()
     }
 
@@ -58,8 +60,11 @@ class RemoteLink(
 
     fun send(body: String, done: (Boolean) -> Unit) {
         later {
-            val ok = post("/api/devices/command", body)?.first in 200..299
-            main.post { done(ok) }
+            val answer = post("/api/devices/command", body)
+            val ok = answer != null && answer.status in 200..299
+            main.post {
+                if (running) done(ok)
+            }
         }
     }
 
@@ -71,8 +76,9 @@ class RemoteLink(
 
     private fun take() {
         later {
-            val answer = post("/api/devices/take", "{\"id\":\"$id\"}") ?: return@later
-            val commands = Remote.commands(answer.second)
+            val payload = JSONObject().put("id", id).toString()
+            val answer = post("/api/devices/take", payload) ?: return@later
+            val commands = Remote.commands(answer.body)
             if (commands.isEmpty()) return@later
             main.post {
                 if (!running) return@post
@@ -90,37 +96,61 @@ class RemoteLink(
         }
     }
 
-    private fun post(path: String, body: String): Pair<Int, String?>? = runCatching {
-        val sending = URL("$server$path").openConnection() as HttpURLConnection
-        try {
-            sending.requestMethod = "POST"
-            sending.connectTimeout = 10_000
-            sending.readTimeout = 10_000
-            sending.doOutput = true
-            sending.setRequestProperty("Authorization", "Token $token")
-            sending.setRequestProperty("Content-Type", "application/json")
-            sending.setRequestProperty("User-Agent", "SoundscapeAndroid/${BuildConfig.VERSION_NAME}")
-            sending.outputStream.use { it.write(body.toByteArray()) }
-            val status = sending.responseCode
-            val text = if (status in 200..299) sending.inputStream.bufferedReader().use { it.readText() } else null
-            status to text
-        } finally {
-            sending.disconnect()
+    private fun stopOnUnauthorized() {
+        if (!running) return
+        running = false
+        main.removeCallbacksAndMessages(null)
+        val active = connection
+        connection = null
+        listener?.interrupt()
+        if (active != null) disconnectOffMain(active)
+        posts.shutdown()
+    }
+
+    private fun disconnectOffMain(active: HttpURLConnection) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            thread(name = "soundscape-device-close", isDaemon = true) {
+                runCatching { active.disconnect() }
+            }
+        } else {
+            runCatching { active.disconnect() }
         }
+    }
+
+    private fun post(path: String, body: String): HttpAnswer? = runCatching {
+        val answer = Net.postJson(
+            address = "$server$path",
+            body = body,
+            token = token,
+            connectTimeoutMs = 10_000,
+            readTimeoutMs = 10_000,
+        )
+        if (answer.status == 401) {
+            stopOnUnauthorized()
+            return@runCatching null
+        }
+        answer
     }.getOrNull()
 
     private fun listen() {
         while (running) {
             runCatching {
-                val live = URL("$server/api/devices/live").openConnection() as HttpURLConnection
+                val live = Net.open(
+                    address = "$server/api/devices/live",
+                    method = "GET",
+                    token = token,
+                    connectTimeoutMs = 15_000,
+                    readTimeoutMs = READ_TIMEOUT_MS,
+                    accept = "text/event-stream",
+                )
                 connection = live
                 try {
-                    live.connectTimeout = 15_000
-                    live.readTimeout = READ_TIMEOUT_MS
-                    live.setRequestProperty("Authorization", "Token $token")
-                    live.setRequestProperty("Accept", "text/event-stream")
-                    live.setRequestProperty("User-Agent", "SoundscapeAndroid/${BuildConfig.VERSION_NAME}")
-                    if (live.responseCode == 200) {
+                    val status = live.responseCode
+                    if (status == 401) {
+                        stopOnUnauthorized()
+                        return
+                    }
+                    if (status == 200) {
                         take()
                         val reader = EventReader()
                         live.inputStream.bufferedReader().use { input ->
@@ -132,6 +162,7 @@ class RemoteLink(
                         }
                     }
                 } finally {
+                    if (connection === live) connection = null
                     live.disconnect()
                 }
             }

@@ -129,7 +129,7 @@ class PagePlayer(
     }
 
     companion object {
-        fun mediaItemFor(server: String, track: BridgeTrack, stream: String? = null, cacheKey: String? = null): MediaItem {
+        fun mediaItemFor(server: String, track: BridgeTrack): MediaItem {
             val metadata = MediaMetadata.Builder()
                 .setTitle(track.title)
                 .setArtist(track.artist)
@@ -138,10 +138,7 @@ class PagePlayer(
                 .setIsPlayable(true)
                 .setIsBrowsable(false)
                 .build()
-            val builder = MediaItem.Builder().setMediaId(track.trackId).setMediaMetadata(metadata)
-            if (stream != null) builder.setUri(stream)
-            if (cacheKey != null) builder.setCustomCacheKey(cacheKey)
-            return builder.build()
+            return MediaItem.Builder().setMediaId(track.trackId).setMediaMetadata(metadata).build()
         }
     }
 }

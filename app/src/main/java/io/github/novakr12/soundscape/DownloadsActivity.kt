@@ -1,7 +1,10 @@
 package io.github.novakr12.soundscape
 
 import android.content.ComponentName
+import android.content.res.Configuration
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -22,13 +25,21 @@ import androidx.media3.exoplayer.offline.Download
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
-import com.google.common.util.concurrent.MoreExecutors
 
 @OptIn(UnstableApi::class)
 class DownloadsActivity : AppCompatActivity() {
+    private data class ItemKey(val trackId: String, val state: Int, val bytes: Long, val percent: Int)
+    private data class ViewKey(val summary: String?, val wifiOnly: Boolean, val items: List<ItemKey>)
+
     private lateinit var list: LinearLayout
+    private val main = Handler(Looper.getMainLooper())
     private var controller: ListenableFuture<MediaController>? = null
-    private val refresh: () -> Unit = { runOnUiThread { show() } }
+    private var lastShown: ViewKey? = null
+    private val render = Runnable { show() }
+    private val refresh: () -> Unit = {
+        main.removeCallbacks(render)
+        main.postDelayed(render, REFRESH_DEBOUNCE_MS)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,25 +56,55 @@ class DownloadsActivity : AppCompatActivity() {
             view.updatePadding(top = bars.top, bottom = bars.bottom, left = bars.left, right = bars.right)
             insets
         }
+        matchBarsToTheme()
         Downloads.watch(refresh)
         show()
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        matchBarsToTheme()
+    }
+
     override fun onDestroy() {
         Downloads.unwatch(refresh)
+        main.removeCallbacksAndMessages(null)
         controller?.let { MediaController.releaseFuture(it) }
+        controller = null
         super.onDestroy()
     }
 
     private fun show() {
+        if (isFinishing || isDestroyed) return
+        val stored = Downloads.stored(this)
+        val summary = Downloads.summary(this)
+        val wifiOnly = Settings(this).downloadsWifiOnly
+        val key = ViewKey(
+            summary = summary,
+            wifiOnly = wifiOnly,
+            items = stored.map { item ->
+                ItemKey(
+                    trackId = item.track.trackId,
+                    state = item.state,
+                    bytes = if (item.state == Download.STATE_COMPLETED) item.bytes else 0L,
+                    percent = if (item.state == Download.STATE_COMPLETED || item.state == Download.STATE_FAILED) {
+                        0
+                    } else {
+                        item.percent.coerceAtLeast(0f).toInt()
+                    },
+                )
+            },
+        )
+        if (key == lastShown) return
+        lastShown = key
+
         list.removeAllViews()
         list.addView(text(getString(R.string.downloads_title), 24f, bold = true))
-        val stored = Downloads.stored(this)
-        list.addView(text(Downloads.summary(this) ?: getString(R.string.downloads_none), 15f, muted = true))
+        list.addView(text(summary ?: getString(R.string.downloads_none), 15f, muted = true))
         list.addView(
             SwitchCompat(this).apply {
                 text = getString(R.string.downloads_wifi_only)
-                isChecked = Settings(this@DownloadsActivity).downloadsWifiOnly
+                isChecked = wifiOnly
                 setOnCheckedChangeListener { _, checked -> Downloads.setWifiOnly(this@DownloadsActivity, checked) }
                 minHeight = dp(48)
             },
@@ -74,8 +115,8 @@ class DownloadsActivity : AppCompatActivity() {
         }
         val groups = stored.groupBy { DownloadData.groupName(it.track) to it.track.artist }
             .toSortedMap(compareBy({ it.first.lowercase() }, { it.second.lowercase() }))
-        for ((key, items) in groups) {
-            val (album, artist) = key
+        for ((groupKey, items) in groups) {
+            val (album, artist) = groupKey
             list.addView(space(20))
             list.addView(text(album, 18f, bold = true))
             val done = items.count { it.state == Download.STATE_COMPLETED }
@@ -125,8 +166,10 @@ class DownloadsActivity : AppCompatActivity() {
     }
 
     private fun play(tracks: List<BridgeTrack>, at: Int) {
-        if (tracks.isEmpty()) return
-        val start = { Playback.service?.playDownloads(tracks, at.coerceAtLeast(0)) }
+        if (tracks.isEmpty() || isFinishing || isDestroyed) return
+        val start = {
+            if (!isFinishing && !isDestroyed) Playback.service?.playDownloads(tracks, at.coerceAtLeast(0))
+        }
         if (Playback.service != null && controller != null) {
             start()
             return
@@ -134,7 +177,7 @@ class DownloadsActivity : AppCompatActivity() {
         val future = controller ?: MediaController.Builder(this, SessionToken(this, ComponentName(this, PlaybackService::class.java)))
             .buildAsync()
             .also { controller = it }
-        future.addListener({ start() }, MoreExecutors.directExecutor())
+        future.addListener({ start() }, ContextCompat.getMainExecutor(this))
     }
 
     private fun text(value: String, size: Float, bold: Boolean = false, muted: Boolean = false) = TextView(this).apply {
@@ -159,4 +202,8 @@ class DownloadsActivity : AppCompatActivity() {
         value.toFloat(),
         resources.displayMetrics,
     ).toInt()
+
+    private companion object {
+        const val REFRESH_DEBOUNCE_MS = 250L
+    }
 }

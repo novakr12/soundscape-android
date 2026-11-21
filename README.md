@@ -65,6 +65,10 @@ Two more come through the same check, each with its own switch under **This app*
 - **Your week in music**, on Monday: plays, listening time, your most played artist and your place among friends. Tapping it opens the home page with the full recap. On by default.
 - **Streak reminder**: at 9 pm, if you have a streak going and haven't played anything yet that day. Off by default.
 
+## Discord
+
+The app can show what you're listening to in your Discord status, the same way the desktop app does: song title, artist, album, cover art and progress bar. Turn it on and paste your Discord application ID under **This app** on Soundscape's Settings page (needs an up-to-date Soundscape server). It talks directly to the Discord app on your phone through Discord's local RPC service—no Discord login or user token is needed, just the Discord app installed and signed in.
+
 ## Update notice
 
 Once a day the app looks at the latest release on GitHub. When a newer version is out, it shows one notification for it, and **This app** on the Settings page shows the new version with a **Download** button. Both open the release page, where you download the new APK and install it over the old one. Turn it off under **This app**.

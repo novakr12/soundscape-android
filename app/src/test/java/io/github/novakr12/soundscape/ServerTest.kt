@@ -39,6 +39,13 @@ class ServerTest {
         assertFalse(Server.isOwnPage(server, "https://music.example.com.evil.test/"))
         assertFalse(Server.isOwnPage("http://10.0.0.5:3000", "http://10.0.0.5:4000/"))
         assertTrue(Server.isOwnPage("http://10.0.0.5:3000", "http://10.0.0.5:3000/music"))
+        val subpath = "https://example.com/soundscape"
+        assertTrue(Server.isOwnPage(subpath, "https://example.com/soundscape"))
+        assertTrue(Server.isOwnPage(subpath, "https://example.com/soundscape/settings"))
+        assertFalse(Server.isOwnPage(subpath, "https://example.com/soundscape2/settings"))
+        assertFalse(Server.isOwnPage(subpath, "https://example.com/other"))
+        assertEquals("", Server.basePath(server))
+        assertEquals("/soundscape", Server.basePath("$subpath/"))
     }
 
     @Test

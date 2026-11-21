@@ -65,6 +65,9 @@ class BridgeTest {
     fun findsCoversOnTheServerOrElsewhere() {
         assertEquals("$server/api/cover/x", Bridge.coverAddress(server, "/api/cover/x"))
         assertEquals("https://cdn.example/a.jpg", Bridge.coverAddress(server, "https://cdn.example/a.jpg"))
+        val subpath = "https://example.com/soundscape"
+        assertEquals("$subpath/api/cover/x", Bridge.coverAddress(subpath, "/api/cover/x"))
+        assertEquals("$subpath/api/cover/x", Bridge.coverAddress(subpath, "/soundscape/api/cover/x"))
         assertNull(Bridge.coverAddress(server, "//evil.example/a.jpg"))
         assertNull(Bridge.coverAddress(server, "javascript:alert(1)"))
         assertNull(Bridge.coverAddress(server, null))
@@ -89,6 +92,12 @@ class BridgeTest {
             "abc" to "listener",
             Bridge.readToken(server, "$server/desktop/connected#token=abc&user=listener"),
         )
+        val subpath = "https://example.com/soundscape"
+        assertEquals(
+            "abc" to "listener",
+            Bridge.readToken(subpath, "$subpath/desktop/connected#token=abc&user=listener"),
+        )
+        assertNull(Bridge.readToken(subpath, "https://example.com/desktop/connected#token=abc&user=listener"))
         assertEquals(
             "a+b" to "ana",
             Bridge.readToken(server, "soundscape-desktop://connected?token=a%2Bb&user=ana"),
@@ -96,13 +105,20 @@ class BridgeTest {
         assertNull(Bridge.readToken(server, "https://evil.example/desktop/connected#token=abc&user=x"))
         assertNull(Bridge.readToken(server, "$server/desktop/connected#token=&user=x"))
         assertNull(Bridge.readToken(server, "$server/stats#token=abc&user=x"))
+        assertNull(Bridge.readToken(server, "$server/desktop/connected#token=%ZZ&user=x"))
     }
 
     @Test
     fun writesScriptsThePageUnderstands() {
         assertTrue(Bridge.command("next").contains("p.command(\"next\", undefined)"))
         assertTrue(Bridge.command("seek", 12.5).contains("p.command(\"seek\", 12.5)"))
-        assertTrue(Bridge.handBack(HandBack(2, 61.234, true)).contains("{ position: 2, time: 61.2, playing: true }"))
+        val backScript = Bridge.handBack(HandBack(2, 61.234, true))
+        val back = parseQuotedJson(backScript)
+        assertEquals(2, back.getInt("position"))
+        assertEquals(61.2, back.getDouble("time"), 0.0)
+        assertTrue(back.getBoolean("playing"))
+        assertFalse(back.has("at"))
+        assertFalse(back.has("tracks"))
         assertEquals(
             "$server/desktop/connect?device=Android%20%28Pixel%207%29&app=android",
             Bridge.connectAddress(server, "Android (Pixel 7)"),
@@ -135,7 +151,11 @@ class BridgeTest {
     @Test
     fun handsBackWithTheMomentThePositionWasTaken() {
         val script = Bridge.handBack(HandBack(2, 61.23456, true, at = 1_700_000_000_000))
-        assertTrue(script.contains("{ position: 2, time: 61.235, playing: true, at: 1700000000000 }"))
+        val back = parseQuotedJson(script)
+        assertEquals(2, back.getInt("position"))
+        assertEquals(61.235, back.getDouble("time"), 0.0)
+        assertTrue(back.getBoolean("playing"))
+        assertEquals(1_700_000_000_000L, back.getLong("at"))
     }
 
     @Test
@@ -160,9 +180,13 @@ class BridgeTest {
 
     @Test
     fun tellsThePageWhatThePhonesPlayerIsDoing() {
-        val script = Bridge.nativeReport("""{"id":"phone0001","state":{"playing":true}}""")
+        val script = Bridge.nativeReport("""{"id":"phone0001","state":{"playing":true,"title":"</script>"}}""")
         assertTrue(script.contains("window.soundscapeNativeReport"))
-        assertTrue(script.contains("""r({"id":"phone0001","state":{"playing":true}})"""))
+        assertTrue(script.contains("r(JSON.parse("))
+        assertFalse(script.contains("</script>"))
+        val parsed = parseQuotedJson(script)
+        assertEquals("phone0001", parsed.getString("id"))
+        assertTrue(parsed.getJSONObject("state").getBoolean("playing"))
     }
 
     @Test
@@ -170,5 +194,10 @@ class BridgeTest {
         assertEquals(1050L, Bridge.readMoment(1000, 1100))
         assertEquals(1000L, Bridge.readMoment(1000, 1000))
         assertEquals(1000L, Bridge.readMoment(1000, 990))
+    }
+
+    private fun parseQuotedJson(script: String): org.json.JSONObject {
+        val quoted = script.substringAfter("JSON.parse(").substringBefore("))")
+        return org.json.JSONObject(org.json.JSONObject("{\"v\":$quoted}").getString("v"))
     }
 }

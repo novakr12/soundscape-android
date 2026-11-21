@@ -22,21 +22,27 @@ data class Stored(val track: BridgeTrack, val state: Int, val bytes: Long, val p
 
 @OptIn(UnstableApi::class)
 object Downloads {
+    private val lock = Any()
     private var database: StandaloneDatabaseProvider? = null
     private var cache: SimpleCache? = null
     private var manager: DownloadManager? = null
     private val known = linkedMapOf<String, Download>()
     private val watchers = mutableSetOf<() -> Unit>()
+    private var cachedStored: List<Stored>? = null
+    private var cachedStates: Map<String, String>? = null
+    private var cachedSummary: String? = null
+    private var summaryCached = false
 
-    fun cache(context: Context): SimpleCache {
-        cache?.let { return it }
-        val made = SimpleCache(File(context.filesDir, "downloads"), NoOpCacheEvictor(), databaseOf(context))
-        cache = made
-        return made
+    fun cache(context: Context): SimpleCache = synchronized(lock) {
+        cache ?: run {
+            val app = context.applicationContext
+            SimpleCache(File(app.filesDir, "downloads"), NoOpCacheEvictor(), databaseOf(app)).also { cache = it }
+        }
     }
 
-    private fun databaseOf(context: Context): StandaloneDatabaseProvider =
+    private fun databaseOf(context: Context): StandaloneDatabaseProvider = synchronized(lock) {
         database ?: StandaloneDatabaseProvider(context.applicationContext).also { database = it }
+    }
 
     fun withToken(context: Context): DataSource.Factory {
         val app = context.applicationContext
@@ -47,7 +53,7 @@ object Downloads {
                 if (token != null) put("Authorization", "Token $token")
             }
             DefaultHttpDataSource.Factory()
-                .setUserAgent("SoundscapeAndroid/${BuildConfig.VERSION_NAME}")
+                .setUserAgent(Net.userAgent)
                 .setConnectTimeoutMs(15_000)
                 .setReadTimeoutMs(30_000)
                 .setDefaultRequestProperties(headers)
@@ -62,47 +68,91 @@ object Downloads {
         .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
 
     fun manager(context: Context): DownloadManager {
-        manager?.let { return it }
-        val app = context.applicationContext
-        val made = DownloadManager(app, databaseOf(app), cache(app), withToken(app), Executors.newFixedThreadPool(2))
-        made.maxParallelDownloads = 2
-        made.requirements = requirements(Settings(app).downloadsWifiOnly)
-        made.addListener(object : DownloadManager.Listener {
-            override fun onInitialized(downloadManager: DownloadManager) {
-                reload(downloadManager)
-            }
+        synchronized(lock) {
+            manager?.let { return it }
+            val app = context.applicationContext
+            val made = DownloadManager(app, databaseOf(app), cache(app), withToken(app), Executors.newFixedThreadPool(2))
+            made.maxParallelDownloads = 2
+            made.requirements = requirements(Settings(app).downloadsWifiOnly)
+            made.addListener(object : DownloadManager.Listener {
+                override fun onInitialized(downloadManager: DownloadManager) {
+                    reload(downloadManager)
+                }
 
-            override fun onDownloadChanged(downloadManager: DownloadManager, download: Download, finalException: Exception?) {
-                known[download.request.id] = download
-                tell()
-            }
+                override fun onDownloadChanged(
+                    downloadManager: DownloadManager,
+                    download: Download,
+                    finalException: Exception?,
+                ) {
+                    synchronized(lock) {
+                        known[download.request.id] = download
+                        invalidateLocked()
+                    }
+                    tell()
+                }
 
-            override fun onDownloadRemoved(downloadManager: DownloadManager, download: Download) {
-                known.remove(download.request.id)
-                tell()
+                override fun onDownloadRemoved(downloadManager: DownloadManager, download: Download) {
+                    synchronized(lock) {
+                        known.remove(download.request.id)
+                        invalidateLocked()
+                    }
+                    tell()
+                }
+            })
+            loadIndexLocked(made)
+            manager = made
+            return made
+        }
+    }
+
+    private fun loadIndexLocked(downloadManager: DownloadManager) {
+        known.clear()
+        runCatching {
+            downloadManager.downloadIndex.getDownloads().use { cursor ->
+                while (cursor.moveToNext()) known[cursor.download.request.id] = cursor.download
             }
-        })
-        manager = made
-        if (made.isInitialized) reload(made)
-        return made
+        }
+        invalidateLocked()
     }
 
     private fun reload(downloadManager: DownloadManager) {
-        known.clear()
-        downloadManager.downloadIndex.getDownloads().use { cursor ->
-            while (cursor.moveToNext()) known[cursor.download.request.id] = cursor.download
+        val loaded = linkedMapOf<String, Download>()
+        runCatching {
+            downloadManager.downloadIndex.getDownloads().use { cursor ->
+                while (cursor.moveToNext()) loaded[cursor.download.request.id] = cursor.download
+            }
+        }
+        synchronized(lock) {
+            known.clear()
+            known.putAll(loaded)
+            invalidateLocked()
         }
         tell()
     }
 
-    private fun tell() = watchers.toList().forEach { it() }
+    private fun invalidateLocked() {
+        cachedStored = null
+        cachedStates = null
+        cachedSummary = null
+        summaryCached = false
+    }
+
+    private fun storedLocked(): List<Stored> = cachedStored ?: known.values.mapNotNull { download ->
+        val track = DownloadData.decode(download.request.data) ?: return@mapNotNull null
+        Stored(track, download.state, download.bytesDownloaded, download.percentDownloaded)
+    }.also { cachedStored = it }
+
+    private fun tell() {
+        val current = synchronized(lock) { watchers.toList() }
+        current.forEach { it() }
+    }
 
     fun watch(watcher: () -> Unit) {
-        watchers += watcher
+        synchronized(lock) { watchers += watcher }
     }
 
     fun unwatch(watcher: () -> Unit) {
-        watchers -= watcher
+        synchronized(lock) { watchers -= watcher }
     }
 
     fun requirements(wifiOnly: Boolean) =
@@ -116,7 +166,7 @@ object Downloads {
     fun add(context: Context, server: String, tracks: List<BridgeTrack>) {
         manager(context)
         for (track in tracks) {
-            val existing = known[track.trackId]
+            val existing = synchronized(lock) { known[track.trackId] }
             if (existing != null && existing.state != Download.STATE_FAILED) continue
             val request = DownloadRequest.Builder(track.trackId, Bridge.streamAddress(server, track).toUri())
                 .setCustomCacheKey(track.trackId)
@@ -129,7 +179,9 @@ object Downloads {
     fun remove(context: Context, trackIds: List<String>) {
         manager(context)
         for (id in trackIds) {
-            if (known.containsKey(id)) DownloadService.sendRemoveDownload(context, SongDownloadService::class.java, id, false)
+            if (synchronized(lock) { known.containsKey(id) }) {
+                DownloadService.sendRemoveDownload(context, SongDownloadService::class.java, id, false)
+            }
         }
     }
 
@@ -139,24 +191,33 @@ object Downloads {
 
     fun stored(context: Context): List<Stored> {
         manager(context)
-        return known.values.mapNotNull { download ->
-            val track = DownloadData.decode(download.request.data) ?: return@mapNotNull null
-            Stored(track, download.state, download.bytesDownloaded, download.percentDownloaded)
+        return synchronized(lock) { storedLocked() }
+    }
+
+    fun states(context: Context): Map<String, String> {
+        manager(context)
+        return synchronized(lock) {
+            cachedStates ?: storedLocked().mapNotNull { item ->
+                when (item.state) {
+                    Download.STATE_COMPLETED -> item.track.trackId to "done"
+                    Download.STATE_FAILED -> item.track.trackId to "failed"
+                    Download.STATE_REMOVING -> null
+                    else -> item.track.trackId to "waiting"
+                }
+            }.toMap().also { cachedStates = it }
         }
     }
 
-    fun states(context: Context): Map<String, String> = stored(context).mapNotNull { item ->
-        when (item.state) {
-            Download.STATE_COMPLETED -> item.track.trackId to "done"
-            Download.STATE_FAILED -> item.track.trackId to "failed"
-            Download.STATE_REMOVING -> null
-            else -> item.track.trackId to "waiting"
-        }
-    }.toMap()
-
     fun summary(context: Context): String? {
-        val done = stored(context).filter { it.state == Download.STATE_COMPLETED }
-        return DownloadData.summary(done.size, done.sumOf { it.bytes })
+        manager(context)
+        return synchronized(lock) {
+            if (summaryCached) return cachedSummary
+            val done = storedLocked().filter { it.state == Download.STATE_COMPLETED }
+            DownloadData.summary(done.size, done.sumOf { it.bytes }).also {
+                cachedSummary = it
+                summaryCached = true
+            }
+        }
     }
 
     fun playable(context: Context): List<BridgeTrack> =

@@ -186,21 +186,8 @@ object Remote {
         )
     }
 
-    private fun track(item: JSONObject): BridgeTrack? {
-        return BridgeTrack(
-            trackId = item.text("trackId") ?: return null,
-            songId = item.text("songId"),
-            title = item.text("title") ?: return null,
-            artist = item.text("artist") ?: return null,
-            album = item.text("album"),
-            cover = item.text("cover"),
-            duration = item.optDouble("duration").takeIf { it.isFinite() && it > 0 },
-            level = 1.0,
-        )
-    }
+    private fun track(item: JSONObject): BridgeTrack? =
+        TrackJson.decode(item, requireTitle = true, requireArtist = true, trim = true, readLevel = false)
 
     fun isForMe(json: String, id: String) = runCatching { JSONObject(json).optString("to") == id }.getOrDefault(false)
-
-    private fun JSONObject.text(name: String): String? =
-        if (isNull(name)) null else optString(name).trim().takeIf { it.isNotEmpty() }
 }

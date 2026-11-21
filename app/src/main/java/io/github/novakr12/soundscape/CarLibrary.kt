@@ -22,6 +22,8 @@ import com.google.common.util.concurrent.MoreExecutors
 import com.google.common.util.concurrent.SettableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
 
 @OptIn(UnstableApi::class)
 class CarLibrary(private val context: Context) : MediaLibrarySession.Callback {
@@ -30,12 +32,21 @@ class CarLibrary(private val context: Context) : MediaLibrarySession.Callback {
     private val main = Handler(Looper.getMainLooper())
     private val pages = ConcurrentHashMap<String, Pair<Long, CarPage>>()
 
+    @Volatile
+    private var released = false
+
     private sealed class Loaded {
         data class Page(val page: CarPage) : Loaded()
         data class Failed(val error: SessionError) : Loaded()
     }
 
+    fun clear() {
+        pages.clear()
+    }
+
     fun release() {
+        released = true
+        pages.clear()
         pool.shutdownNow()
         resolver.shutdownNow()
     }
@@ -102,7 +113,9 @@ class CarLibrary(private val context: Context) : MediaLibrarySession.Callback {
         val node = Car.searchNode(query)
         return Futures.transform(load(node, fresh = true), { loaded ->
             val count = (loaded as? Loaded.Page)?.page?.songs?.size ?: 0
-            main.post { session.notifySearchResultChanged(browser, query, count, params) }
+            main.post {
+                if (!released) runCatching { session.notifySearchResultChanged(browser, query, count, params) }
+            }
             LibraryResult.ofVoid()
         }, pool)
     }
@@ -125,9 +138,19 @@ class CarLibrary(private val context: Context) : MediaLibrarySession.Callback {
         mediaItems: MutableList<MediaItem>,
     ): ListenableFuture<MutableList<MediaItem>> {
         val future = SettableFuture.create<MutableList<MediaItem>>()
-        resolver.execute {
-            val resolved = mediaItems.flatMap { item -> resolve(item)?.let { it.first.subList(it.second, it.second + 1) } ?: emptyList() }
-            future.set(playable(resolved).toMutableList())
+        try {
+            resolver.execute {
+                try {
+                    val resolved = mediaItems.flatMap { item ->
+                        resolve(item)?.let { it.first.subList(it.second, it.second + 1) } ?: emptyList()
+                    }
+                    future.set(playable(resolved).toMutableList())
+                } catch (error: Throwable) {
+                    future.setException(error)
+                }
+            }
+        } catch (error: RejectedExecutionException) {
+            future.setException(error)
         }
         return future
     }
@@ -140,42 +163,54 @@ class CarLibrary(private val context: Context) : MediaLibrarySession.Callback {
         startPositionMs: Long,
     ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
         val future = SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
-        resolver.execute {
-            val single = mediaItems.singleOrNull()?.let { resolve(it) }
-            val (tracks, start) = single ?: (
-                mediaItems.mapNotNull { Car.trackFrom(it.mediaMetadata.extras?.getString(TRACK)) } to
-                    startIndex.coerceAtLeast(0)
-                )
-            if (tracks.isEmpty() || start !in tracks.indices) {
-                future.setException(IllegalArgumentException("Nothing to play"))
-            } else {
-                val position = if (single != null) 0L else startPositionMs.coerceAtLeast(0)
-                future.set(MediaSession.MediaItemsWithStartPosition(playable(tracks), start, position))
+        try {
+            resolver.execute {
+                try {
+                    val single = mediaItems.singleOrNull()?.let { resolve(it) }
+                    val (tracks, start) = single ?: (
+                        mediaItems.mapNotNull { Car.trackFrom(it.mediaMetadata.extras?.getString(TRACK)) } to
+                            startIndex.coerceAtLeast(0)
+                        )
+                    if (tracks.isEmpty() || start !in tracks.indices) {
+                        future.setException(IllegalArgumentException("Nothing to play"))
+                    } else {
+                        val position = if (single != null) 0L else startPositionMs.coerceAtLeast(0)
+                        future.set(MediaSession.MediaItemsWithStartPosition(playable(tracks), start, position))
+                    }
+                } catch (error: Throwable) {
+                    future.setException(error)
+                }
             }
+        } catch (error: RejectedExecutionException) {
+            future.setException(error)
         }
         return future
     }
 
+    private fun awaitSongs(node: String, fresh: Boolean = false): List<BridgeTrack>? =
+        runCatching { (load(node, fresh).get(RESOLVE_TIMEOUT_SECONDS, TimeUnit.SECONDS) as? Loaded.Page)?.page?.songs }
+            .getOrNull()
+
     private fun resolve(item: MediaItem): Pair<List<BridgeTrack>, Int>? {
         Car.trackFrom(item.mediaMetadata.extras?.getString(TRACK))?.let { track ->
             Car.readSongId(item.mediaId)?.let { (parent, index) ->
-                val songs = (load(parent).get() as? Loaded.Page)?.page?.songs
+                val songs = awaitSongs(parent)
                 if (songs != null && index in songs.indices) return songs to index
             }
             return listOf(track) to 0
         }
         Car.readSongId(item.mediaId)?.let { (parent, index) ->
-            val songs = (load(parent).get() as? Loaded.Page)?.page?.songs ?: return null
+            val songs = awaitSongs(parent) ?: return null
             return if (index in songs.indices) songs to index else null
         }
         if (Car.isPlayableFolder(item.mediaId)) {
-            val songs = (load(item.mediaId, fresh = item.mediaId == Car.SHUFFLE).get() as? Loaded.Page)?.page?.songs
+            val songs = awaitSongs(item.mediaId, fresh = item.mediaId == Car.SHUFFLE)
             return songs?.takeIf { it.isNotEmpty() }?.let { it to 0 }
         }
         val query = item.requestMetadata.searchQuery?.trim()
         if (query != null) {
             val node = if (query.isEmpty()) Car.SHUFFLE else Car.searchNode(query)
-            val songs = (load(node, fresh = true).get() as? Loaded.Page)?.page?.songs
+            val songs = awaitSongs(node, fresh = true)
             return songs?.takeIf { it.isNotEmpty() }?.let { it to 0 }
         }
         return null
@@ -210,11 +245,18 @@ class CarLibrary(private val context: Context) : MediaLibrarySession.Callback {
     }
 
     private fun load(node: String, fresh: Boolean = false): ListenableFuture<Loaded> {
+        if (released) {
+            return Futures.immediateFuture(Loaded.Failed(SessionError(SessionError.ERROR_SESSION_DISCONNECTED, "")))
+        }
         if (node == Car.DOWNLOADS) {
             val future = SettableFuture.create<Loaded>()
             main.post {
-                val songs = Downloads.playable(context).map { CarEntry.Song(it) }
-                future.set(Loaded.Page(CarPage(true, context.getString(R.string.car_downloads), songs)))
+                try {
+                    val songs = Downloads.playable(context).map { CarEntry.Song(it) }
+                    future.set(Loaded.Page(CarPage(true, context.getString(R.string.car_downloads), songs)))
+                } catch (error: Throwable) {
+                    future.setException(error)
+                }
             }
             return future
         }
@@ -222,7 +264,11 @@ class CarLibrary(private val context: Context) : MediaLibrarySession.Callback {
         if (!fresh) {
             pages[node]?.takeIf { now - it.first < KEEP_MS }?.let { return Futures.immediateFuture(Loaded.Page(it.second)) }
         }
-        return pool.submit<Loaded> { fetch(node, now) }
+        return try {
+            pool.submit<Loaded> { fetch(node, now) }
+        } catch (_: RejectedExecutionException) {
+            Futures.immediateFuture(Loaded.Failed(SessionError(SessionError.ERROR_SESSION_DISCONNECTED, "")))
+        }
     }
 
     private fun fetch(node: String, now: Long): Loaded {
@@ -247,8 +293,20 @@ class CarLibrary(private val context: Context) : MediaLibrarySession.Callback {
         if (!page.connected) {
             return Loaded.Failed(SessionError(SessionError.ERROR_SESSION_SETUP_REQUIRED, context.getString(R.string.car_no_navidrome)))
         }
-        pages[node] = now to page
+        cachePage(node, now, page)
         return Loaded.Page(page)
+    }
+
+    private fun cachePage(node: String, now: Long, page: CarPage) {
+        if (pages.size >= MAX_CACHED_PAGES) {
+            val cutoff = now - KEEP_MS
+            pages.entries.removeIf { it.value.first < cutoff }
+            while (pages.size >= MAX_CACHED_PAGES) {
+                val oldest = pages.entries.minByOrNull { it.value.first }?.key ?: break
+                pages.remove(oldest)
+            }
+        }
+        pages[node] = now to page
     }
 
     private fun tabs(): ImmutableList<MediaItem> = ImmutableList.of(
@@ -292,6 +350,8 @@ class CarLibrary(private val context: Context) : MediaLibrarySession.Callback {
         const val OFFLINE = "https://offline.invalid"
         private const val SEARCH_SUPPORTED = "android.media.browse.SEARCH_SUPPORTED"
         private const val KEEP_MS = 5 * 60 * 1000L
+        private const val RESOLVE_TIMEOUT_SECONDS = 15L
+        private const val MAX_CACHED_PAGES = 100
 
         fun authority(context: Context) = "${context.packageName}.covers"
 

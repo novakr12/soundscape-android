@@ -46,6 +46,14 @@ class Settings(context: Context) {
         get() = stored.getBoolean(UPDATE_NOTICE, true)
         set(value) = stored.edit { putBoolean(UPDATE_NOTICE, value) }
 
+    var discord: Boolean
+        get() = stored.getBoolean(DISCORD, false)
+        set(value) = stored.edit { putBoolean(DISCORD, value) }
+
+    var discordAppId: String?
+        get() = stored.getString(DISCORD_APP_ID, null)
+        set(value) = stored.edit { if (value == null) remove(DISCORD_APP_ID) else putString(DISCORD_APP_ID, value) }
+
     var lastRecap: String?
         get() = stored.getString(LAST_RECAP, null)
         set(value) = stored.edit { putString(LAST_RECAP, value) }
@@ -107,6 +115,8 @@ class Settings(context: Context) {
         const val WEEKLY_RECAP = "weekly_recap"
         const val STREAK_REMINDER = "streak_reminder"
         const val UPDATE_NOTICE = "update_notice"
+        const val DISCORD = "discord"
+        const val DISCORD_APP_ID = "discord_app_id"
         const val LAST_RECAP = "last_recap"
         const val LAST_REMINDER = "last_reminder"
         const val TOLD_UPDATE = "told_update"

@@ -45,35 +45,14 @@ object DownloadData {
         return DownloadAsk(page, requests)
     }
 
-    fun trackFrom(item: JSONObject): BridgeTrack? {
-        val trackId = item.optString("trackId").takeIf { it.isNotEmpty() && it.length <= 300 } ?: return null
-        val title = item.optString("title").takeIf { it.isNotEmpty() } ?: return null
-        return BridgeTrack(
-            trackId = trackId,
-            songId = item.optString("songId").takeIf { it.isNotEmpty() && !item.isNull("songId") },
-            title = title,
-            artist = item.optString("artist"),
-            album = item.optString("album").takeIf { it.isNotEmpty() && !item.isNull("album") },
-            cover = item.optString("cover").takeIf { it.isNotEmpty() && !item.isNull("cover") },
-            duration = item.optDouble("duration").takeIf { it.isFinite() && it > 0 },
-            level = item.optDouble("level", 1.0).takeIf { it.isFinite() }?.coerceIn(0.0, 1.0) ?: 1.0,
-        )
-    }
+    fun trackFrom(item: JSONObject): BridgeTrack? =
+        TrackJson.decode(item, requireTitle = true, maxIdLength = TrackJson.MAX_ID_LENGTH)
 
-    fun encode(track: BridgeTrack): ByteArray = JSONObject()
-        .put("trackId", track.trackId)
-        .put("songId", track.songId ?: JSONObject.NULL)
-        .put("title", track.title)
-        .put("artist", track.artist)
-        .put("album", track.album ?: JSONObject.NULL)
-        .put("cover", track.cover ?: JSONObject.NULL)
-        .put("duration", track.duration ?: JSONObject.NULL)
-        .put("level", track.level)
-        .toString()
-        .toByteArray()
+    fun encode(track: BridgeTrack): ByteArray =
+        TrackJson.encode(track).toString().toByteArray(Charsets.UTF_8)
 
     fun decode(data: ByteArray): BridgeTrack? =
-        runCatching { JSONObject(String(data)) }.getOrNull()?.let(::trackFrom)
+        runCatching { JSONObject(String(data, Charsets.UTF_8)) }.getOrNull()?.let(::trackFrom)
 
     fun push(version: String, states: Map<String, String>): String {
         val downloads = JSONObject()

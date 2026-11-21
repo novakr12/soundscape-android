@@ -4,6 +4,7 @@ import org.json.JSONObject
 
 sealed class SettingsCommand {
     data class Option(val name: String, val value: Boolean) : SettingsCommand()
+    data class DiscordApp(val id: String) : SettingsCommand()
     data object Connect : SettingsCommand()
     data object Disconnect : SettingsCommand()
     data object ChangeServer : SettingsCommand()
@@ -27,6 +28,8 @@ data class AppSettingsView(
     val streakReminder: Boolean = false,
     val updateNotice: Boolean = true,
     val update: String? = null,
+    val discord: Boolean = false,
+    val discordAppId: String? = null,
 )
 
 object SettingsPage {
@@ -36,7 +39,16 @@ object SettingsPage {
     const val OPTION_RECAP = "weekly_recap"
     const val OPTION_STREAK = "streak_reminder"
     const val OPTION_UPDATE = "update_notice"
-    private val OPTIONS = setOf(OPTION_BACKGROUND, OPTION_NOTIFICATIONS, OPTION_WIFI, OPTION_RECAP, OPTION_STREAK, OPTION_UPDATE)
+    const val OPTION_DISCORD = "discord"
+    private val OPTIONS = setOf(
+        OPTION_BACKGROUND,
+        OPTION_NOTIFICATIONS,
+        OPTION_WIFI,
+        OPTION_RECAP,
+        OPTION_STREAK,
+        OPTION_UPDATE,
+        OPTION_DISCORD,
+    )
     private const val MOST_AT_ONCE = 20
 
     const val READ = """(() => {
@@ -45,6 +57,16 @@ object SettingsPage {
   const queued = Array.isArray(window.soundscapeAppCommands) ? window.soundscapeAppCommands.splice(0, 20) : [];
   return { page: window.soundscapeAppPage, commands: queued };
 })()"""
+
+    fun read(server: String): String {
+        val expected = "${Server.basePath(server)}/settings"
+        return """(() => {
+  if (location.pathname !== ${JSONObject.quote(expected)}) return null;
+  window.soundscapeAppPage ??= String(Math.random()).slice(2);
+  const queued = Array.isArray(window.soundscapeAppCommands) ? window.soundscapeAppCommands.splice(0, $MOST_AT_ONCE) : [];
+  return { page: window.soundscapeAppPage, commands: queued };
+})()"""
+    }
 
     fun parse(json: String?): SettingsAsk? {
         if (json.isNullOrBlank() || json == "null") return null
@@ -63,6 +85,7 @@ object SettingsPage {
                         null
                     }
                 }
+                "discord-app" -> (item.opt("id") as? String)?.let(SettingsCommand::DiscordApp)
                 "connect" -> SettingsCommand.Connect
                 "disconnect" -> SettingsCommand.Disconnect
                 "change-server" -> SettingsCommand.ChangeServer
@@ -91,7 +114,9 @@ object SettingsPage {
                 .put(OPTION_RECAP, view.weeklyRecap)
                 .put(OPTION_STREAK, view.streakReminder)
                 .put(OPTION_UPDATE, view.updateNotice)
-                .put("update", view.update ?: JSONObject.NULL),
+                .put("update", view.update ?: JSONObject.NULL)
+                .put(OPTION_DISCORD, view.discord)
+                .put("discord_app_id", view.discordAppId ?: JSONObject.NULL),
         )
         .put("error", error ?: JSONObject.NULL)
         .toString()

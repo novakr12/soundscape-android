@@ -11,8 +11,8 @@ import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
-import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
@@ -25,9 +25,8 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 object Playback {
     var service: PlaybackService? = null
@@ -43,13 +42,16 @@ class PlaybackService : MediaLibraryService() {
     private lateinit var library: CarLibrary
     private val main = Handler(Looper.getMainLooper())
     private val reporter = Executors.newSingleThreadExecutor()
+    private lateinit var discord: DiscordLink
     private var native: Native? = null
+    private var destroyed = false
 
     val playingNatively: Boolean get() = native?.live == true
     val playingForPage: Boolean get() = native?.let { it.live && it.fromPage } == true
 
     override fun onCreate() {
         super.onCreate()
+        discord = DiscordLink(this)
         pagePlayer = PagePlayer(
             Looper.getMainLooper(),
             send = { script -> Playback.runInPage?.invoke(script) },
@@ -76,16 +78,64 @@ class PlaybackService : MediaLibraryService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession = session
 
     fun showPage(state: PageState?, server: String) {
+        if (destroyed || !::pagePlayer.isInitialized) return
         pagePlayer.show(state, server)
+        if (!playingNatively) updateDiscord()
+    }
+
+    fun refreshDiscord() {
+        updateDiscord(force = true)
+    }
+
+    fun stopNative() {
+        handingBack = false
+        val running = native ?: return
+        native = null
+        if (::session.isInitialized && ::pagePlayer.isInitialized && session.player === running.player) {
+            session.player = pagePlayer
+        }
+        running.release()
+    }
+
+    fun clearLibrary() {
+        if (::library.isInitialized) library.clear()
+    }
+
+    private fun updateDiscord(force: Boolean = false) {
+        if (destroyed || !::discord.isInitialized) return
+        discord.update(currentDiscord(), force = force)
+    }
+
+    private fun currentDiscord(): DiscordSource? {
+        val running = native
+        if (running != null && running.live) return running.discordSource()
+        if (!::pagePlayer.isInitialized) return null
+        val state = pagePlayer.shown
+        if (state != null && state.remote == null && state.playing) {
+            val track = state.current
+            val settings = Settings(this)
+            return DiscordSource(
+                playing = DiscordPlaying(
+                    song = DiscordSong(track.title, track.artist, track.album),
+                    position = state.time,
+                    length = state.duration ?: track.duration,
+                    art = track.cover,
+                ),
+                server = settings.server,
+                token = settings.token,
+            )
+        }
+        return null
     }
 
     fun takeOver(state: PageState, server: String, token: String, readAt: Long) {
-        if (native != null || state.remote != null) return
+        if (destroyed || native != null || state.remote != null) return
         start(state, server, token, fromPage = true, catchUp = state.playing).since =
             Bridge.readMoment(readAt, SystemClock.elapsedRealtime())
     }
 
     fun obeyPage(command: RemoteCommand) {
+        if (destroyed) return
         native?.let {
             it.obeyHere(command)
             return
@@ -99,11 +149,12 @@ class PlaybackService : MediaLibraryService() {
         val server = settings.server ?: return
         val volume = pagePlayer.shown?.volume ?: DEFAULT_VOLUME
         val state = PageState(take.tracks, take.position, take.time, null, take.playing, volume, "off")
-        start(state, server, settings.token.orEmpty(), fromPage = false).player.playWhenReady = take.playing
+        start(state, server, settings.token.orEmpty(), fromPage = false, playWhenReady = take.playing)
         tellPage()
     }
 
     fun tellPage() {
+        if (destroyed || !::pagePlayer.isInitialized) return
         val json = native?.report() ?: Remote.report(
             Settings(this).deviceId,
             Remote.deviceName(Build.MODEL),
@@ -113,12 +164,8 @@ class PlaybackService : MediaLibraryService() {
     }
 
     fun playDownloads(tracks: List<BridgeTrack>, at: Int) {
-        if (tracks.isEmpty()) return
-        native?.let {
-            native = null
-            session.player = pagePlayer
-            it.release()
-        }
+        if (destroyed || tracks.isEmpty()) return
+        stopNative()
         Playback.runInPage?.invoke(Bridge.command("pause"))
         val settings = Settings(this)
         val state = PageState(tracks, at.coerceIn(tracks.indices), 0.0, null, true, 1.0, "off")
@@ -126,6 +173,7 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private fun playFromCar(items: List<MediaItem>, index: Int, positionMs: Long) {
+        if (destroyed) return
         val tracks = items.mapNotNull { Car.trackFrom(it.mediaMetadata.extras?.getString(CarLibrary.TRACK)) }
         val at = index.coerceAtLeast(0)
         if (tracks.isEmpty() || tracks.size != items.size || at !in tracks.indices) return
@@ -135,8 +183,8 @@ class PlaybackService : MediaLibraryService() {
             return
         }
         val settings = Settings(this)
-        val server = settings.server ?: return
-        val token = settings.token ?: return
+        val server = settings.server ?: OFFLINE
+        val token = settings.token.orEmpty()
         val volume = pagePlayer.shown?.volume ?: DEFAULT_VOLUME
         start(PageState(tracks, at, time, null, true, volume, "off"), server, token, fromPage = true).replaced = true
     }
@@ -147,6 +195,7 @@ class PlaybackService : MediaLibraryService() {
         token: String,
         fromPage: Boolean,
         catchUp: Boolean = false,
+        playWhenReady: Boolean = true,
     ): Native {
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(Downloads.playing(this)))
@@ -165,7 +214,7 @@ class PlaybackService : MediaLibraryService() {
         if (Settings(this).shuffle) running.setShuffle(true)
         running.syncing = catchUp
         running.since = SystemClock.elapsedRealtime()
-        player.playWhenReady = true
+        player.playWhenReady = playWhenReady
         if (fromPage) main.postDelayed({ if (native === running && !running.live) giveUp(running) }, TAKE_OVER_WITHIN_MS)
         return running
     }
@@ -195,11 +244,7 @@ class PlaybackService : MediaLibraryService() {
     }
 
     fun finishHandBack() {
-        handingBack = false
-        val running = native ?: return
-        native = null
-        session.player = pagePlayer
-        running.release()
+        stopNative()
     }
 
     private fun itemsFor(server: String, tracks: List<BridgeTrack>) =
@@ -207,61 +252,73 @@ class PlaybackService : MediaLibraryService() {
 
     private fun giveUp(running: Native) {
         if (native !== running) return
-        native = null
-        if (session.player === running.player) session.player = pagePlayer
-        running.release()
+        stopNative()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         if (!playingNatively || native?.player?.playWhenReady != true) {
-            pagePlayer.show(null, "")
+            if (::pagePlayer.isInitialized) pagePlayer.show(null, "")
             stopSelf()
         }
     }
 
     override fun onDestroy() {
-        native?.release()
+        destroyed = true
+        main.removeCallbacksAndMessages(null)
+        val running = native
         native = null
-        session.release()
-        library.release()
-        pagePlayer.release()
+        running?.release(notify = false)
+        if (::discord.isInitialized) discord.stop()
+        if (::session.isInitialized) session.release()
+        if (::library.isInitialized) library.release()
+        if (::pagePlayer.isInitialized) pagePlayer.release()
         reporter.shutdown()
         if (Playback.service === this) Playback.service = null
         super.onDestroy()
     }
 
-    private fun withCookies(): DataSource.Factory = DataSource.Factory {
-        val cookies = CookieManager.getInstance()
-        val factory = DefaultHttpDataSource.Factory().setUserAgent("SoundscapeAndroid/${BuildConfig.VERSION_NAME}")
-        val server = Settings(this).server
-        val cookie = server?.let { cookies.getCookie(it) }
-        if (cookie != null) factory.setDefaultRequestProperties(mapOf("Cookie" to cookie))
-        factory.createDataSource()
+    private fun withCookies(): DataSource.Factory {
+        val app = applicationContext
+        return DataSource.Factory {
+            val cookies = CookieManager.getInstance()
+            val factory = DefaultHttpDataSource.Factory().setUserAgent(Net.userAgent)
+            val server = Settings(app).server
+            val cookie = server?.let { cookies.getCookie(it) }
+            if (cookie != null) factory.setDefaultRequestProperties(mapOf("Cookie" to cookie))
+            factory.createDataSource()
+        }
+    }
+
+    private fun onReporter(work: () -> Unit) {
+        if (destroyed) return
+        try {
+            reporter.execute(work)
+        } catch (_: RejectedExecutionException) {
+        }
     }
 
     private fun report(kind: String, track: BridgeTrack, server: String, token: String) {
+        val app = applicationContext
         val playedAt = System.currentTimeMillis() / 1000
-        reporter.execute {
+        onReporter {
             val sent = token.isNotEmpty() && server != OFFLINE && runCatching {
-                val connection = URL("$server/api/$kind").openConnection() as HttpURLConnection
-                connection.requestMethod = "POST"
-                connection.connectTimeout = 10_000
-                connection.readTimeout = 10_000
-                connection.doOutput = true
-                connection.setRequestProperty("Authorization", "Token $token")
-                connection.setRequestProperty("Content-Type", "application/json")
                 val body = JSONObject().put("trackId", track.trackId)
                 track.songId?.let { body.put("songId", it) }
-                connection.outputStream.use { it.write(body.toString().toByteArray()) }
-                val status = connection.responseCode
-                connection.disconnect()
+                val status = Net.postJson(
+                    address = "$server/api/$kind",
+                    body = body.toString(),
+                    token = token,
+                    connectTimeoutMs = 10_000,
+                    readTimeoutMs = 10_000,
+                    readResponse = false,
+                ).status
                 status in 200..299 || status == 404
             }.getOrDefault(false)
-            if (kind != "play") return@execute
+            if (kind != "play") return@onReporter
             if (sent) {
-                OfflinePlays.send(this)
+                OfflinePlays.send(app)
             } else {
-                OfflinePlays.add(this, track, playedAt)
+                OfflinePlays.add(app, track, playedAt)
             }
         }
     }
@@ -289,11 +346,17 @@ class PlaybackService : MediaLibraryService() {
         private var counted = false
         private var announced = -1
         private var refilledAfter: String? = null
+        private var refillingFor: String? = null
+        private var refillRetryAt = 0L
         private var unshuffled: List<BridgeTrack>? = null
+        private var shuffling = false
+        private var consecutiveErrors = 0
         private val tick = object : Runnable {
             override fun run() {
+                if (this@PlaybackService.native !== this@Native) return
                 follow()
                 keepGoing()
+                updateDiscord()
                 main.postDelayed(this, TICK_MS)
             }
         }
@@ -304,15 +367,36 @@ class PlaybackService : MediaLibraryService() {
             val autoplay = Settings(this@PlaybackService).autoplay
             if (!Radio.needsMore(autoplay, player.repeatMode == Player.REPEAT_MODE_OFF, left)) return
             val seed = tracks.getOrNull(index) ?: return
-            if (seed.trackId == refilledAfter || token.isEmpty() || server == OFFLINE) return
-            refilledAfter = seed.trackId
+            val now = SystemClock.elapsedRealtime()
+            if (seed.trackId == refilledAfter ||
+                seed.trackId == refillingFor ||
+                now < refillRetryAt ||
+                token.isEmpty() ||
+                server == OFFLINE
+            ) {
+                return
+            }
+            refillingFor = seed.trackId
             val exclude = tracks.drop(index).mapNotNull { it.songId }
             val body = Radio.body(seed, exclude, tracks.map { it.trackId })
-            reporter.execute {
-                val songs = runCatching { Radio.fetch(server, token, body) }.getOrDefault(emptyList())
-                main.post { songs.forEach { obey(RemoteCommand.Enqueue(it, false)) } }
+            onReporter {
+                val songs = runCatching { Radio.fetch(server, token, body) }.getOrNull()
+                main.post {
+                    if (this@PlaybackService.native !== this@Native) return@post
+                    if (refillingFor == seed.trackId) refillingFor = null
+                    if (songs.isNullOrEmpty()) {
+                        refillRetryAt = SystemClock.elapsedRealtime() + REFILL_RETRY_MS
+                        return@post
+                    }
+                    if (tracks.getOrNull(player.currentMediaItemIndex)?.trackId != seed.trackId) return@post
+                    refilledAfter = seed.trackId
+                    refillRetryAt = 0L
+                    songs.forEach { obey(RemoteCommand.Enqueue(it, false)) }
+                    changed()
+                }
             }
         }
+
         private var syncStarted = 0L
         private val sync = object : Runnable {
             override fun run() {
@@ -321,7 +405,7 @@ class PlaybackService : MediaLibraryService() {
         }
 
         private fun keepInStep() {
-            if (!syncing) return
+            if (!syncing || this@PlaybackService.native !== this) return
             val now = SystemClock.elapsedRealtime()
             if (player.currentMediaItemIndex != state.position || now - syncStarted > SYNC_WITHIN_MS) {
                 finishSync()
@@ -368,17 +452,19 @@ class PlaybackService : MediaLibraryService() {
             refining = true
             val asked = SystemClock.elapsedRealtime()
             read { fresh ->
-                val answered = SystemClock.elapsedRealtime()
-                if (fresh != null &&
-                    fresh.playing &&
-                    fresh.current.trackId == state.current.trackId &&
-                    answered - asked <= TRUSTED_READ_MS
-                ) {
-                    pageTime = fresh.time
-                    since = Bridge.readMoment(asked, answered)
+                if (this@PlaybackService.native === this && syncing) {
+                    val answered = SystemClock.elapsedRealtime()
+                    if (fresh != null &&
+                        fresh.playing &&
+                        fresh.current.trackId == state.current.trackId &&
+                        answered - asked <= TRUSTED_READ_MS
+                    ) {
+                        pageTime = fresh.time
+                        since = Bridge.readMoment(asked, answered)
+                    }
+                    refined = true
+                    refining = false
                 }
-                refined = true
-                refining = false
             }
         }
 
@@ -392,19 +478,21 @@ class PlaybackService : MediaLibraryService() {
         }
 
         private fun goLive() {
-            if (live) return
+            if (live || this@PlaybackService.native !== this) return
             live = true
             session.player = player
             if (fromPage) Playback.runInPage?.invoke(Bridge.command("pause"))
             Playback.runInPage?.invoke(Remote.holdScript(true))
             connect()
             announce()
+            updateDiscord()
             main.post(tick)
         }
 
         fun volumeAt(index: Int) = (volume * (tracks.getOrNull(index)?.level ?: 1.0)).toFloat()
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (isPlaying) consecutiveErrors = 0
             changed()
             if (!isPlaying || live) return
             if (!syncing) {
@@ -443,7 +531,7 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
-            if (reason != Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) return
+            if (shuffling || reason != Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) return
             changed()
             val now = (0 until player.mediaItemCount).map {
                 Car.trackFrom(player.getMediaItemAt(it).mediaMetadata.extras?.getString(CarLibrary.TRACK))
@@ -461,6 +549,10 @@ class PlaybackService : MediaLibraryService() {
             replaced = true
             announced = -1
             unshuffled = null
+            refilledAfter = null
+            refillingFor = null
+            refillRetryAt = 0L
+            consecutiveErrors = 0
             player.setMediaItems(itemsFor(server, next), position, (time * 1000).toLong())
             player.volume = volumeAt(position)
             player.prepare()
@@ -484,12 +576,19 @@ class PlaybackService : MediaLibraryService() {
                 else -> return
             }
             val order = tracks.toMutableList()
-            for ((at, to) in Shuffle.moves(order, wanted, from)) {
-                order.add(to, order.removeAt(at))
-                player.moveMediaItem(at, to)
+            val moves = Shuffle.moves(order, wanted, from)
+            shuffling = true
+            try {
+                for ((at, to) in moves) {
+                    order.add(to, order.removeAt(at))
+                    player.moveMediaItem(at, to)
+                }
+            } finally {
+                shuffling = false
             }
             tracks = order
             replaced = true
+            changed()
         }
 
         override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
@@ -498,7 +597,6 @@ class PlaybackService : MediaLibraryService() {
             val on = unshuffled == null
             Settings(this@PlaybackService).shuffle = on
             setShuffle(on)
-            changed()
         }
 
         fun obeyHere(command: RemoteCommand) {
@@ -509,9 +607,27 @@ class PlaybackService : MediaLibraryService() {
         fun report(): String =
             Remote.report(Settings(this@PlaybackService).deviceId, Remote.deviceName(Build.MODEL), snapshot())
 
+        fun discordSource(): DiscordSource? {
+            val snap = snapshot()
+            val track = snap.track ?: return null
+            if (!snap.playing) return null
+            return DiscordSource(
+                playing = DiscordPlaying(
+                    song = DiscordSong(track.title, track.artist, track.album),
+                    position = snap.time,
+                    length = snap.duration,
+                    art = track.cover,
+                ),
+                server = server,
+                token = token,
+            )
+        }
+
         private fun changed() {
+            if (this@PlaybackService.native !== this) return
             link?.reportSoon()
             Playback.reportToPage?.invoke(report())
+            if (live) updateDiscord()
         }
 
         private fun connect() {
@@ -588,13 +704,27 @@ class PlaybackService : MediaLibraryService() {
                         player.currentMediaItemIndex,
                         player.currentPosition / 1000.0,
                     ) ?: return
-                    link?.send(body) { sent -> if (sent) player.pause() }
+                    link?.send(body) { sent ->
+                        if (sent && this@PlaybackService.native === this) player.pause()
+                    }
                 }
             }
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            if (!live && fromPage) giveUp(this)
+            if (!live && fromPage) {
+                giveUp(this)
+                return
+            }
+            if (player.hasNextMediaItem() && consecutiveErrors < MAX_CONSECUTIVE_ERRORS) {
+                consecutiveErrors++
+                player.seekToNextMediaItem()
+                player.prepare()
+                player.play()
+            } else {
+                player.pause()
+                changed()
+            }
         }
 
         private fun announce() {
@@ -620,7 +750,7 @@ class PlaybackService : MediaLibraryService() {
             }
         }
 
-        fun release() {
+        fun release(notify: Boolean = true) {
             link?.stop()
             link = null
             if (live) Playback.runInPage?.invoke(Remote.holdScript(false))
@@ -628,7 +758,13 @@ class PlaybackService : MediaLibraryService() {
             main.removeCallbacks(sync)
             player.removeListener(this)
             player.release()
-            main.post { tellPage() }
+            if (notify && !destroyed) {
+                main.post {
+                    if (destroyed) return@post
+                    tellPage()
+                    updateDiscord()
+                }
+            }
         }
     }
 
@@ -639,6 +775,8 @@ class PlaybackService : MediaLibraryService() {
         const val SYNC_STEP_MS = 50L
         const val TRUSTED_READ_MS = 150L
         const val SETTLE_MS = 300L
+        const val REFILL_RETRY_MS = 15_000L
+        const val MAX_CONSECUTIVE_ERRORS = 3
         val MUSIC: AudioAttributes =
             AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
         const val OFFLINE = CarLibrary.OFFLINE

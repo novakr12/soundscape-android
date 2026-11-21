@@ -167,10 +167,15 @@ class RemoteTest {
 
     @Test
     fun handsANewQueueBackToThePage() {
-        val back = HandBack(1, 12.34, true, listOf(song, song.copy(trackId = "t2")))
+        val back = HandBack(1, 12.34, true, listOf(song, song.copy(trackId = "t2", title = "</script>")))
         val script = Bridge.handBack(back)
-        assertTrue(script.contains("position: 1, time: 12.3, playing: true, tracks: ["))
-        assertTrue(script.contains("\"trackId\":\"t2\""))
+        assertFalse(script.contains("</script>"))
+        val quoted = script.substringAfter("JSON.parse(").substringBefore("))")
+        val parsed = JSONObject(JSONObject("{\"v\":$quoted}").getString("v"))
+        assertEquals(1, parsed.getInt("position"))
+        assertEquals(12.3, parsed.getDouble("time"), 0.0)
+        assertTrue(parsed.getBoolean("playing"))
+        assertEquals("t2", parsed.getJSONArray("tracks").getJSONObject(1).getString("trackId"))
         assertFalse(Bridge.handBack(HandBack(0, 1.0, false)).contains("tracks"))
     }
 }

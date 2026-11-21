@@ -4,7 +4,6 @@ import androidx.media3.common.Player
 import org.json.JSONObject
 import java.net.URI
 import java.net.URLDecoder
-import java.net.URLEncoder
 
 data class BridgeTrack(
     val trackId: String,
@@ -63,9 +62,13 @@ object Bridge {
         } else {
             Math.round(back.time.coerceAtLeast(0.0) * 10) / 10.0
         }
-        val tracks = back.tracks?.let { ", tracks: ${Remote.handed(it)}" }.orEmpty()
-        val at = back.at?.let { ", at: $it" }.orEmpty()
-        return "(() => { const p = window.soundscapePlayer; return p ? p.handBack({ position: ${back.position}, time: $time, playing: ${back.playing}$at$tracks }) : false; })()"
+        val payload = JSONObject()
+            .put("position", back.position)
+            .put("time", time)
+            .put("playing", back.playing)
+        back.at?.let { payload.put("at", it) }
+        back.tracks?.let { payload.put("tracks", Remote.handed(it)) }
+        return "(() => { const p = window.soundscapePlayer; return p ? p.handBack(JSON.parse(${JSONObject.quote(payload.toString())})) : false; })()"
     }
 
     fun parse(json: String?): PageState? {
@@ -73,18 +76,7 @@ object Bridge {
         val root = runCatching { JSONObject(json) }.getOrNull() ?: return null
         val list = root.optJSONArray("tracks") ?: return null
         val tracks = (0 until list.length()).mapNotNull { index ->
-            val track = list.optJSONObject(index) ?: return@mapNotNull null
-            val trackId = track.optString("trackId").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
-            BridgeTrack(
-                trackId = trackId,
-                songId = track.text("songId"),
-                title = track.optString("title"),
-                artist = track.optString("artist"),
-                album = track.text("album"),
-                cover = track.text("cover"),
-                duration = track.optDouble("duration").takeIf { it.isFinite() && it > 0 },
-                level = track.optDouble("level", 1.0).takeIf { it.isFinite() }?.coerceIn(0.0, 1.0) ?: 1.0,
-            )
+            TrackJson.decode(list.optJSONObject(index))
         }
         if (tracks.size != list.length() || tracks.isEmpty()) return null
         val position = root.optInt("position", -1)
@@ -97,7 +89,7 @@ object Bridge {
             playing = root.optBoolean("playing", false),
             volume = root.optDouble("volume", 0.8).takeIf { it.isFinite() }?.coerceIn(0.0, 1.0) ?: 0.8,
             repeat = root.optString("repeat", "off"),
-            remote = root.optJSONObject("remote")?.text("name"),
+            remote = root.optJSONObject("remote")?.optionalText("name"),
             handing = if (root.has("handing")) root.optBoolean("handing") else null,
         )
     }
@@ -105,14 +97,10 @@ object Bridge {
     const val NATIVE_PAGE =
         "(() => { const p = window.soundscapePlayer; return Boolean(p && p.native === true); })()"
 
-    fun nativeReport(json: String) = "(() => { const r = window.soundscapeNativeReport; if (r) r($json); })()"
+    fun nativeReport(json: String) =
+        "(() => { const r = window.soundscapeNativeReport; if (r) r(JSON.parse(${JSONObject.quote(json)})); })()"
 
-    fun originRule(server: String): String? {
-        val uri = runCatching { java.net.URI(server.trim()) }.getOrNull() ?: return null
-        val scheme = uri.scheme?.lowercase()?.takeIf { it == "http" || it == "https" } ?: return null
-        val host = uri.host?.takeIf { it.isNotEmpty() } ?: return null
-        return if (uri.port == -1) "$scheme://$host" else "$scheme://$host:${uri.port}"
-    }
+    fun originRule(server: String): String? = Server.origin(server)
 
     fun handBackDone(page: PageState?): Boolean {
         if (page == null) return false
@@ -145,15 +133,23 @@ object Bridge {
     }
 
     fun streamAddress(server: String, track: BridgeTrack): String = if (track.songId != null) {
-        "$server/api/full-song/${encode(track.songId)}"
+        "$server/api/full-song/${encodeQueryPart(track.songId)}"
     } else {
-        "$server/api/listen/${encode(track.trackId)}"
+        "$server/api/listen/${encodeQueryPart(track.trackId)}"
     }
 
     fun coverAddress(server: String, cover: String?): String? = when {
         cover == null -> null
         cover.startsWith("https://") || cover.startsWith("http://") -> cover
-        cover.startsWith("/") && !cover.startsWith("//") -> "$server$cover"
+        cover.startsWith("/") && !cover.startsWith("//") -> {
+            val base = Server.basePath(server)
+            val origin = Server.origin(server)
+            if (base.isNotEmpty() && origin != null && (cover == base || cover.startsWith("$base/"))) {
+                "$origin$cover"
+            } else {
+                "$server$cover"
+            }
+        }
         else -> null
     }
 
@@ -171,28 +167,28 @@ object Bridge {
         if (before != null && now > before && now - before <= LONGEST_STEP_SECONDS) now - before else 0.0
 
     fun connectAddress(server: String, device: String) =
-        "$server/desktop/connect?device=${encode(device)}&app=android"
+        "$server/desktop/connect?device=${encodeQueryPart(device)}&app=android"
 
     fun readToken(server: String, address: String): Pair<String, String>? {
         val uri = runCatching { URI(address) }.getOrNull() ?: return null
+        val connectedPath = "${Server.basePath(server)}/desktop/connected"
         val pairs = when {
             uri.scheme == "soundscape-desktop" && uri.host == "connected" -> uri.rawQuery
-            Server.isOwnPage(server, address) && uri.rawPath == "/desktop/connected" -> uri.rawFragment
+            Server.isOwnPage(server, address) && uri.rawPath == connectedPath -> uri.rawFragment
             else -> null
         } ?: return null
         val values = pairs.split("&").mapNotNull { pair ->
             val at = pair.indexOf('=')
-            if (at <= 0) null else decode(pair.substring(0, at)) to decode(pair.substring(at + 1))
+            if (at <= 0) {
+                null
+            } else {
+                runCatching { decode(pair.substring(0, at)) to decode(pair.substring(at + 1)) }.getOrNull()
+            }
         }.toMap()
         val token = values["token"]?.takeIf { it.isNotBlank() } ?: return null
         val user = values["user"]?.takeIf { it.isNotBlank() } ?: return null
         return token to user
     }
-
-    private fun JSONObject.text(name: String): String? =
-        if (isNull(name)) null else optString(name).takeIf { it.isNotEmpty() }
-
-    private fun encode(text: String) = URLEncoder.encode(text, "UTF-8").replace("+", "%20")
 
     private fun decode(text: String) = URLDecoder.decode(text, "UTF-8")
 }

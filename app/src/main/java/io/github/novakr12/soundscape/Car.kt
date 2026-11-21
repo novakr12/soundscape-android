@@ -1,7 +1,6 @@
 package io.github.novakr12.soundscape
 
 import org.json.JSONObject
-import java.net.URLEncoder
 
 sealed class CarEntry {
     data class Folder(
@@ -52,15 +51,15 @@ object Car {
     }
 
     fun address(server: String, node: String): String = if (isSearch(node)) {
-        "$server/api/app/library?search=${encode(queryOf(node))}"
+        "$server/api/app/library?search=${encodeQueryPart(queryOf(node))}"
     } else {
-        "$server/api/app/library?node=${encode(node)}"
+        "$server/api/app/library?node=${encodeQueryPart(node)}"
     }
 
     fun isCoverPath(path: String?) = path != null && COVER.matches(path)
 
     fun coverUri(authority: String, cover: String?): String? =
-        if (isCoverPath(cover)) "content://$authority/cover?path=${encode(cover!!)}" else null
+        if (isCoverPath(cover)) "content://$authority/cover?path=${encodeQueryPart(cover!!)}" else null
 
     fun page(json: String?): CarPage? {
         val root = runCatching { JSONObject(json ?: return null) }.getOrNull() ?: return null
@@ -69,12 +68,12 @@ object Car {
             val item = list.optJSONObject(index) ?: return@mapNotNull null
             when (item.optString("kind")) {
                 "folder" -> {
-                    val node = item.text("node")?.takeIf { isNode(it) } ?: return@mapNotNull null
+                    val node = item.optionalText("node", trim = true)?.takeIf { isNode(it) } ?: return@mapNotNull null
                     CarEntry.Folder(
                         node = node,
-                        title = item.text("title") ?: return@mapNotNull null,
-                        subtitle = item.text("subtitle"),
-                        cover = item.text("cover"),
+                        title = item.optionalText("title", trim = true) ?: return@mapNotNull null,
+                        subtitle = item.optionalText("subtitle", trim = true),
+                        cover = item.optionalText("cover", trim = true),
                         playable = item.optBoolean("playable", false),
                     )
                 }
@@ -82,38 +81,13 @@ object Car {
                 else -> null
             }
         }
-        return CarPage(root.optBoolean("connected", true), root.text("title") ?: "Soundscape", items)
+        return CarPage(root.optBoolean("connected", true), root.optionalText("title", trim = true) ?: "Soundscape", items)
     }
 
-    fun trackJson(track: BridgeTrack): String = JSONObject()
-        .put("trackId", track.trackId)
-        .put("songId", track.songId ?: JSONObject.NULL)
-        .put("title", track.title)
-        .put("artist", track.artist)
-        .put("album", track.album ?: JSONObject.NULL)
-        .put("cover", track.cover ?: JSONObject.NULL)
-        .put("duration", track.duration ?: JSONObject.NULL)
-        .put("level", track.level)
-        .toString()
+    fun trackJson(track: BridgeTrack): String = TrackJson.encode(track).toString()
 
     fun trackFrom(json: String?): BridgeTrack? = trackFrom(runCatching { JSONObject(json ?: return null) }.getOrNull())
 
-    private fun trackFrom(item: JSONObject?): BridgeTrack? {
-        item ?: return null
-        return BridgeTrack(
-            trackId = item.text("trackId") ?: return null,
-            songId = item.text("songId"),
-            title = item.text("title") ?: return null,
-            artist = item.text("artist") ?: return null,
-            album = item.text("album"),
-            cover = item.text("cover"),
-            duration = item.optDouble("duration").takeIf { it.isFinite() && it > 0 },
-            level = item.optDouble("level", 1.0).takeIf { it.isFinite() }?.coerceIn(0.0, 1.0) ?: 1.0,
-        )
-    }
-
-    private fun JSONObject.text(name: String): String? =
-        if (isNull(name)) null else optString(name).trim().takeIf { it.isNotEmpty() }
-
-    private fun encode(text: String) = URLEncoder.encode(text, "UTF-8").replace("+", "%20")
+    private fun trackFrom(item: JSONObject?): BridgeTrack? =
+        TrackJson.decode(item, requireTitle = true, requireArtist = true, trim = true)
 }

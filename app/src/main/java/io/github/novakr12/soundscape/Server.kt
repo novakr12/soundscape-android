@@ -20,20 +20,30 @@ object Server {
     }
 
     fun isOwnPage(server: String, address: String): Boolean {
-        val home = runCatching { URI(server) }.getOrNull() ?: return false
-        val there = runCatching { URI(address) }.getOrNull() ?: return false
-        return home.scheme.equals(there.scheme, ignoreCase = true) &&
-            home.host.equals(there.host, ignoreCase = true) &&
-            portOf(home) == portOf(there)
+        val home = runCatching { URI(server.trim()) }.getOrNull() ?: return false
+        val there = runCatching { URI(address.trim()) }.getOrNull() ?: return false
+        if (!home.scheme.equals(there.scheme, ignoreCase = true) ||
+            !home.host.equals(there.host, ignoreCase = true) ||
+            portOf(home) != portOf(there)
+        ) {
+            return false
+        }
+        val base = home.rawPath.orEmpty().trimEnd('/')
+        if (base.isEmpty()) return true
+        val path = there.rawPath.orEmpty()
+        return path == base || path.startsWith("$base/")
     }
 
     fun origin(server: String): String? {
-        val uri = runCatching { URI(server) }.getOrNull() ?: return null
+        val uri = runCatching { URI(server.trim()) }.getOrNull() ?: return null
         val scheme = uri.scheme?.lowercase()?.takeIf { it == "https" || it == "http" } ?: return null
-        val host = uri.host?.lowercase() ?: return null
+        val host = uri.host?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
         val port = if (uri.port == -1) "" else ":${uri.port}"
         return "$scheme://$host$port"
     }
+
+    fun basePath(server: String): String =
+        runCatching { URI(server.trim()).rawPath.orEmpty().trimEnd('/') }.getOrDefault("")
 
     fun looksLikeSoundscape(body: String): Boolean = SOUNDSCAPE.containsMatchIn(body)
 

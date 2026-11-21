@@ -21,8 +21,6 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.Worker
 import androidx.work.WorkerParameters
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.TimeUnit
 
 class NoticeWorker(context: Context, parameters: WorkerParameters) : Worker(context, parameters) {
@@ -33,21 +31,22 @@ class NoticeWorker(context: Context, parameters: WorkerParameters) : Worker(cont
         val server = settings.server ?: return Result.success()
         val token = settings.token ?: return Result.success()
         OfflinePlays.send(context)
+        if (!settings.notifications) return Result.success()
         val (status, body) = fetch(Notices.address(server, settings.lastNotification), token) ?: return Result.success()
         if (status == 401) {
             settings.forgetConnection()
             stop(context)
             return Result.success()
         }
-        if (status == 200 && body != null && settings.notifications) {
+        if (status == 200 && body != null) {
             Notices.parse(body)?.let { items ->
                 val (show, last) = Notices.fresh(items, settings.lastNotification)
                 settings.lastNotification = last
                 Notices.summary(show).forEach { post(context, it) }
             }
         }
-        if (settings.notifications && settings.weeklyRecap) checkRecap(context, settings, server, token)
-        if (settings.notifications && settings.streakReminder) checkStreak(context, settings, server, token)
+        if (settings.weeklyRecap) checkRecap(context, settings, server, token)
+        if (settings.streakReminder) checkStreak(context, settings, server, token)
         return Result.success()
     }
 
@@ -109,23 +108,16 @@ class NoticeWorker(context: Context, parameters: WorkerParameters) : Worker(cont
             )
         }
 
-        fun fetch(address: String, token: String?): Pair<Int, String?>? {
-            val connection = runCatching { URL(address).openConnection() as HttpURLConnection }.getOrNull() ?: return null
-            return try {
-                connection.connectTimeout = 15_000
-                connection.readTimeout = 15_000
-                if (token != null) connection.setRequestProperty("Authorization", "Token $token")
-                connection.setRequestProperty("User-Agent", "SoundscapeAndroid/${BuildConfig.VERSION_NAME}")
-                connection.setRequestProperty("Accept", "application/json")
-                val status = connection.responseCode
-                val body = if (status == 200) connection.inputStream.bufferedReader().use { it.readText() } else null
-                status to body
-            } catch (_: Exception) {
-                null
-            } finally {
-                connection.disconnect()
-            }
-        }
+        fun fetch(address: String, token: String?): Pair<Int, String?>? = runCatching {
+            val answer = Net.get(
+                address = address,
+                token = token,
+                connectTimeoutMs = 15_000,
+                readTimeoutMs = 15_000,
+                accept = "application/json",
+            )
+            answer.status to answer.body
+        }.getOrNull()
 
         private val online = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
 
