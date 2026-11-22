@@ -5,4 +5,11 @@
     <color name="accent">#1DB954</color>
     <color name="icon_background">#0A0E14</color>
     <color name="icon_green">#00E05A</color>
+    <color name="icon_teal">#14B8A6</color>
+    <color name="icon_blue">#3B82F6</color>
+    <color name="icon_purple">#8B5CF6</color>
+    <color name="icon_pink">#EC4899</color>
+    <color name="icon_red">#EF4444</color>
+    <color name="icon_orange">#F97316</color>
+    <color name="icon_yellow">#EAB308</color>
 </resources>

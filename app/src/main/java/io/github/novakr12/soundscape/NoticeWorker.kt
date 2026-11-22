@@ -167,9 +167,9 @@ class NoticeWorker(context: Context, parameters: WorkerParameters) : Worker(cont
             val open = if (shown.outside && shown.url != null) {
                 Intent(Intent.ACTION_VIEW, shown.url.toUri())
             } else {
-                Intent(context, MainActivity::class.java)
-                    .setAction(MainActivity.ACTION_OPEN)
-                    .putExtra(MainActivity.EXTRA_PAGE, shown.url ?: "/notifications")
+                Intent(context, PlayerActivity::class.java)
+                    .setAction(PlayerActivity.ACTION_OPEN)
+                    .putExtra(PlayerActivity.EXTRA_PAGE, shown.url ?: "/notifications")
                     .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
             }
             val tap = PendingIntent.getActivity(

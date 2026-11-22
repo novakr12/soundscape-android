@@ -56,7 +56,7 @@ import java.net.URI
 import java.util.concurrent.RejectedExecutionException
 
 @OptIn(UnstableApi::class)
-class MainActivity : AppCompatActivity() {
+class PlayerActivity : AppCompatActivity() {
     private data class PendingTakeOver(
         val state: PageState,
         val server: String,
@@ -757,14 +757,14 @@ class MainActivity : AppCompatActivity() {
                 val currentUrl = currentPageUrl ?: view.url
                 if (request.isForMainFrame && (currentUrl == null || Server.isOwnPage(server, currentUrl))) {
                     Bridge.readToken(server, address)?.let { (token, user) ->
-                        val settings = Settings(this@MainActivity).apply {
+                        val settings = Settings(this@PlayerActivity).apply {
                             this.token = token
                             this.user = user
                             lastNotification = null
                         }
                         if (settings.notifications) startNotifications()
                         listenToPage()
-                        Toast.makeText(this@MainActivity, R.string.connected, Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@PlayerActivity, R.string.connected, Toast.LENGTH_SHORT).show()
                         view.loadUrl(server)
                         return true
                     }
@@ -886,6 +886,10 @@ class MainActivity : AppCompatActivity() {
         }
         if (item.optString("do") == "autoplay") {
             Settings(this).autoplay = item.optBoolean("on")
+            return
+        }
+        if (item.optString("do") == "icon") {
+            LauncherIcon.show(this, item.optString("accent").takeIf { item.has("accent") && !item.isNull("accent") })
             return
         }
         if (item.optString("do") == "visualizer") {

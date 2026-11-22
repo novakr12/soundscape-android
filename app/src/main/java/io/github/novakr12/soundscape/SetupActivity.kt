@@ -44,7 +44,7 @@ class SetupActivity : AppCompatActivity() {
                             val settings = Settings(this)
                             if (settings.server != server) settings.forgetConnection()
                             settings.server = server
-                            startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP))
+                            startActivity(Intent(this, PlayerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP))
                             finish()
                         } else {
                             status.text = problem

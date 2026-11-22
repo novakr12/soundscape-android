@@ -27,7 +27,7 @@
         android:shortcutShortLabel="@string/shortcut_settings">
         <intent
             android:action="io.github.novakr12.soundscape.OPEN"
-            android:targetClass="io.github.novakr12.soundscape.MainActivity"
+            android:targetClass="io.github.novakr12.soundscape.PlayerActivity"
             android:targetPackage="io.github.novakr12.soundscape">
             <extra
                 android:name="page"
