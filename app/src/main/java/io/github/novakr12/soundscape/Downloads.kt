@@ -1,6 +1,10 @@
 package io.github.novakr12.soundscape
 
 import android.content.Context
+import android.database.ContentObserver
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.annotation.OptIn
 import androidx.core.net.toUri
 import androidx.media3.common.util.UnstableApi
@@ -16,15 +20,20 @@ import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.media3.exoplayer.scheduler.Requirements
 import java.io.File
-import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 
 data class Stored(val track: BridgeTrack, val state: Int, val bytes: Long, val percent: Float)
 
 @OptIn(UnstableApi::class)
 object Downloads {
+    private const val ADD_CHUNK_SIZE = 200
+    private const val REMOVE_CHUNK_SIZE = 500
     private val lock = Any()
+    private val version = AtomicLong(1L)
+    private var appContext: Context? = null
     private var database: StandaloneDatabaseProvider? = null
     private var cache: SimpleCache? = null
+    private var cacheFactory: CacheDataSource.Factory? = null
     private var manager: DownloadManager? = null
     private val known = linkedMapOf<String, Download>()
     private val watchers = mutableSetOf<() -> Unit>()
@@ -32,6 +41,15 @@ object Downloads {
     private var cachedStates: Map<String, String>? = null
     private var cachedSummary: String? = null
     private var summaryCached = false
+
+    private val remoteLock = Any()
+    private var remoteStatesVersion = -1L
+    private var remoteStates = emptyMap<String, String>()
+    private var remoteSummaryVersion = -1L
+    private var remoteSummary: String? = null
+    private var remoteStoredVersion = -1L
+    private var remoteStored = emptyList<Stored>()
+    private var observer: ContentObserver? = null
 
     fun cache(context: Context): SimpleCache = synchronized(lock) {
         cache ?: run {
@@ -42,6 +60,29 @@ object Downloads {
 
     private fun databaseOf(context: Context): StandaloneDatabaseProvider = synchronized(lock) {
         database ?: StandaloneDatabaseProvider(context.applicationContext).also { database = it }
+    }
+
+    private fun hasDownloadStore(context: Context): Boolean {
+        synchronized(lock) {
+            if (cache != null || manager != null) return true
+        }
+        val app = context.applicationContext
+        val dir = File(app.filesDir, "downloads")
+        if (dir.isDirectory && dir.list()?.isNotEmpty() == true) return true
+        return app.getDatabasePath("exoplayer_internal.db").exists()
+    }
+
+    internal fun isReadyOrEmpty(context: Context): Boolean {
+        synchronized(lock) {
+            if (manager != null) return true
+        }
+        return !hasDownloadStore(context)
+    }
+
+    internal fun currentVersion(context: Context): Long {
+        if (!hasDownloadStore(context)) return 0L
+        manager(context)
+        return version.get()
     }
 
     fun withToken(context: Context): DataSource.Factory {
@@ -61,17 +102,40 @@ object Downloads {
         }
     }
 
-    fun playing(context: Context): DataSource.Factory = CacheDataSource.Factory()
-        .setCache(cache(context))
-        .setUpstreamDataSourceFactory(withToken(context))
-        .setCacheWriteDataSinkFactory(null)
-        .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+    fun playing(context: Context): DataSource.Factory {
+        val app = context.applicationContext
+        val upstream = withToken(app)
+        return DataSource.Factory {
+            if (!hasDownloadStore(app)) {
+                upstream.createDataSource()
+            } else {
+                cacheDataSourceFactory(app, upstream).createDataSource()
+            }
+        }
+    }
+
+    private fun cacheDataSourceFactory(app: Context, upstream: DataSource.Factory): CacheDataSource.Factory =
+        synchronized(lock) {
+            cacheFactory ?: CacheDataSource.Factory()
+                .setCache(cache(app))
+                .setUpstreamDataSourceFactory(upstream)
+                .setCacheWriteDataSinkFactory(null)
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                .also { cacheFactory = it }
+        }
 
     fun manager(context: Context): DownloadManager {
         synchronized(lock) {
             manager?.let { return it }
             val app = context.applicationContext
-            val made = DownloadManager(app, databaseOf(app), cache(app), withToken(app), Executors.newFixedThreadPool(2))
+            appContext = app
+            val made = DownloadManager(
+                app,
+                databaseOf(app),
+                cache(app),
+                withToken(app),
+                Pools.bounded("soundscape-dl", 2),
+            )
             made.maxParallelDownloads = 2
             made.requirements = requirements(Settings(app).downloadsWifiOnly)
             made.addListener(object : DownloadManager.Listener {
@@ -135,6 +199,15 @@ object Downloads {
         cachedStates = null
         cachedSummary = null
         summaryCached = false
+        version.incrementAndGet()
+    }
+
+    private fun invalidateRemoteCache() {
+        synchronized(remoteLock) {
+            remoteStatesVersion = -1L
+            remoteSummaryVersion = -1L
+            remoteStoredVersion = -1L
+        }
     }
 
     private fun storedLocked(): List<Stored> = cachedStored ?: known.values.mapNotNull { download ->
@@ -145,26 +218,96 @@ object Downloads {
     private fun tell() {
         val current = synchronized(lock) { watchers.toList() }
         current.forEach { it() }
+        appContext?.let { app ->
+            runCatching { app.contentResolver.notifyChange(AppBridgeProvider.downloadsUri(app), null) }
+        }
     }
 
-    fun watch(watcher: () -> Unit) {
-        synchronized(lock) { watchers += watcher }
+    fun watch(context: Context, watcher: () -> Unit) {
+        val app = context.applicationContext
+        if (SoundscapeApp.isPlaybackProcess(app)) {
+            synchronized(lock) { watchers += watcher }
+            return
+        }
+        val register = synchronized(remoteLock) {
+            val wasEmpty = watchers.isEmpty()
+            synchronized(lock) { watchers += watcher }
+            wasEmpty && observer == null
+        }
+        if (register) {
+            val created = object : ContentObserver(Handler(Looper.getMainLooper())) {
+                override fun onChange(selfChange: Boolean) {
+                    invalidateRemoteCache()
+                    val current = synchronized(lock) { watchers.toList() }
+                    current.forEach { it() }
+                }
+            }
+            val registered = runCatching {
+                app.contentResolver.registerContentObserver(AppBridgeProvider.downloadsUri(app), false, created)
+                true
+            }.getOrDefault(false)
+            if (registered) {
+                synchronized(remoteLock) {
+                    if (watchers.isEmpty()) {
+                        runCatching { app.contentResolver.unregisterContentObserver(created) }
+                    } else {
+                        observer = created
+                    }
+                }
+            }
+        }
     }
 
-    fun unwatch(watcher: () -> Unit) {
-        synchronized(lock) { watchers -= watcher }
+    fun unwatch(context: Context, watcher: () -> Unit) {
+        val app = context.applicationContext
+        if (SoundscapeApp.isPlaybackProcess(app)) {
+            synchronized(lock) { watchers -= watcher }
+            return
+        }
+        val toUnregister = synchronized(remoteLock) {
+            synchronized(lock) { watchers -= watcher }
+            if (watchers.isEmpty()) observer.also { observer = null } else null
+        }
+        toUnregister?.let { runCatching { app.contentResolver.unregisterContentObserver(it) } }
     }
 
     fun requirements(wifiOnly: Boolean) =
         Requirements(if (wifiOnly) Requirements.NETWORK_UNMETERED else Requirements.NETWORK)
 
     fun setWifiOnly(context: Context, wifiOnly: Boolean) {
-        Settings(context).downloadsWifiOnly = wifiOnly
-        DownloadService.sendSetRequirements(context, SongDownloadService::class.java, requirements(wifiOnly), false)
+        val app = context.applicationContext
+        if (!SoundscapeApp.isPlaybackProcess(app)) {
+            AppBridgeProvider.call(
+                app,
+                AppBridgeProvider.METHOD_DOWNLOADS_WIFI_ONLY,
+                extras = Bundle().apply { putBoolean(AppBridgeProvider.KEY_WIFI_ONLY, wifiOnly) },
+            )
+            return
+        }
+        Settings(app).downloadsWifiOnly = wifiOnly
+        if (hasDownloadStore(app)) {
+            DownloadService.sendSetRequirements(app, SongDownloadService::class.java, requirements(wifiOnly), false)
+        }
     }
 
     fun add(context: Context, server: String, tracks: List<BridgeTrack>) {
-        manager(context)
+        if (tracks.isEmpty()) return
+        val app = context.applicationContext
+        if (!SoundscapeApp.isPlaybackProcess(app)) {
+            tracks.chunked(ADD_CHUNK_SIZE).forEach { chunk ->
+                AppBridgeProvider.call(
+                    app,
+                    AppBridgeProvider.METHOD_DOWNLOADS_ADD,
+                    extras = Bundle().apply {
+                        putString(AppBridgeProvider.KEY_SERVER, server)
+                        putString(AppBridgeProvider.KEY_TRACKS_JSON, PlaybackCodecs.encodeTracks(chunk))
+                    },
+                )
+            }
+            invalidateRemoteCache()
+            return
+        }
+        manager(app)
         for (track in tracks) {
             val existing = synchronized(lock) { known[track.trackId] }
             if (existing != null && existing.state != Download.STATE_FAILED) continue
@@ -172,32 +315,97 @@ object Downloads {
                 .setCustomCacheKey(track.trackId)
                 .setData(DownloadData.encode(track))
                 .build()
-            DownloadService.sendAddDownload(context, SongDownloadService::class.java, request, false)
+            DownloadService.sendAddDownload(app, SongDownloadService::class.java, request, false)
         }
     }
 
     fun remove(context: Context, trackIds: List<String>) {
-        manager(context)
+        if (trackIds.isEmpty()) return
+        val app = context.applicationContext
+        if (!SoundscapeApp.isPlaybackProcess(app)) {
+            trackIds.chunked(REMOVE_CHUNK_SIZE).forEach { chunk ->
+                AppBridgeProvider.call(
+                    app,
+                    AppBridgeProvider.METHOD_DOWNLOADS_REMOVE,
+                    extras = Bundle().apply { putStringArrayList(AppBridgeProvider.KEY_TRACK_IDS, ArrayList(chunk)) },
+                )
+            }
+            invalidateRemoteCache()
+            return
+        }
+        if (!hasDownloadStore(app)) return
+        manager(app)
         for (id in trackIds) {
             if (synchronized(lock) { known.containsKey(id) }) {
-                DownloadService.sendRemoveDownload(context, SongDownloadService::class.java, id, false)
+                DownloadService.sendRemoveDownload(app, SongDownloadService::class.java, id, false)
             }
         }
     }
 
     fun removeAll(context: Context) {
-        DownloadService.sendRemoveAllDownloads(context, SongDownloadService::class.java, false)
+        val app = context.applicationContext
+        if (!SoundscapeApp.isPlaybackProcess(app)) {
+            AppBridgeProvider.call(app, AppBridgeProvider.METHOD_DOWNLOADS_REMOVE_ALL)
+            invalidateRemoteCache()
+            return
+        }
+        if (!hasDownloadStore(app)) return
+        DownloadService.sendRemoveAllDownloads(app, SongDownloadService::class.java, false)
     }
 
-    fun stored(context: Context): List<Stored> {
-        manager(context)
-        return synchronized(lock) { storedLocked() }
+    fun stored(context: Context): List<Stored> = storedWithVersion(context).first
+
+    internal fun storedWithVersion(context: Context): Pair<List<Stored>, Long> {
+        val app = context.applicationContext
+        if (!SoundscapeApp.isPlaybackProcess(app)) {
+            val since = synchronized(remoteLock) { remoteStoredVersion }
+            val result = AppBridgeProvider.call(
+                app,
+                AppBridgeProvider.METHOD_DOWNLOADS_STORED,
+                extras = Bundle().apply { putLong(AppBridgeProvider.KEY_SINCE_VERSION, since) },
+            ) ?: return synchronized(remoteLock) { remoteStored to remoteStoredVersion }
+            if (result.getBoolean(AppBridgeProvider.KEY_UNCHANGED, false)) {
+                return synchronized(remoteLock) { remoteStored to remoteStoredVersion }
+            }
+            val parsed = PlaybackCodecs.decodeStoredList(result.getString(AppBridgeProvider.KEY_JSON))
+            val nextVersion = result.getLong(AppBridgeProvider.KEY_VERSION, -1L)
+            synchronized(remoteLock) {
+                remoteStored = parsed
+                remoteStoredVersion = nextVersion
+            }
+            return parsed to nextVersion
+        }
+        if (!hasDownloadStore(app)) return emptyList<Stored>() to 0L
+        manager(app)
+        return synchronized(lock) { storedLocked() to version.get() }
     }
 
-    fun states(context: Context): Map<String, String> {
-        manager(context)
+    fun states(context: Context): Map<String, String> = statesWithVersion(context).first
+
+    internal fun statesWithVersion(context: Context): Pair<Map<String, String>, Long> {
+        val app = context.applicationContext
+        if (!SoundscapeApp.isPlaybackProcess(app)) {
+            val since = synchronized(remoteLock) { remoteStatesVersion }
+            val result = AppBridgeProvider.call(
+                app,
+                AppBridgeProvider.METHOD_DOWNLOADS_STATES,
+                extras = Bundle().apply { putLong(AppBridgeProvider.KEY_SINCE_VERSION, since) },
+            ) ?: return synchronized(remoteLock) { remoteStates to remoteStatesVersion }
+            if (result.getBoolean(AppBridgeProvider.KEY_UNCHANGED, false)) {
+                return synchronized(remoteLock) { remoteStates to remoteStatesVersion }
+            }
+            val parsed = PlaybackCodecs.decodeStringMap(result.getString(AppBridgeProvider.KEY_JSON))
+            val nextVersion = result.getLong(AppBridgeProvider.KEY_VERSION, -1L)
+            synchronized(remoteLock) {
+                remoteStates = parsed
+                remoteStatesVersion = nextVersion
+            }
+            return parsed to nextVersion
+        }
+        if (!hasDownloadStore(app)) return emptyMap<String, String>() to 0L
+        manager(app)
         return synchronized(lock) {
-            cachedStates ?: storedLocked().mapNotNull { item ->
+            val map = cachedStates ?: storedLocked().mapNotNull { item ->
                 when (item.state) {
                     Download.STATE_COMPLETED -> item.track.trackId to "done"
                     Download.STATE_FAILED -> item.track.trackId to "failed"
@@ -205,18 +413,45 @@ object Downloads {
                     else -> item.track.trackId to "waiting"
                 }
             }.toMap().also { cachedStates = it }
+            map to version.get()
         }
     }
 
-    fun summary(context: Context): String? {
-        manager(context)
-        return synchronized(lock) {
-            if (summaryCached) return cachedSummary
-            val done = storedLocked().filter { it.state == Download.STATE_COMPLETED }
-            DownloadData.summary(done.size, done.sumOf { it.bytes }).also {
-                cachedSummary = it
-                summaryCached = true
+    fun summary(context: Context): String? = summaryWithVersion(context).first
+
+    internal fun summaryWithVersion(context: Context): Pair<String?, Long> {
+        val app = context.applicationContext
+        if (!SoundscapeApp.isPlaybackProcess(app)) {
+            val since = synchronized(remoteLock) { remoteSummaryVersion }
+            val result = AppBridgeProvider.call(
+                app,
+                AppBridgeProvider.METHOD_DOWNLOADS_SUMMARY,
+                extras = Bundle().apply { putLong(AppBridgeProvider.KEY_SINCE_VERSION, since) },
+            ) ?: return synchronized(remoteLock) { remoteSummary to remoteSummaryVersion }
+            if (result.getBoolean(AppBridgeProvider.KEY_UNCHANGED, false)) {
+                return synchronized(remoteLock) { remoteSummary to remoteSummaryVersion }
             }
+            val parsed = result.getString(AppBridgeProvider.KEY_SUMMARY)
+            val nextVersion = result.getLong(AppBridgeProvider.KEY_VERSION, -1L)
+            synchronized(remoteLock) {
+                remoteSummary = parsed
+                remoteSummaryVersion = nextVersion
+            }
+            return parsed to nextVersion
+        }
+        if (!hasDownloadStore(app)) return null to 0L
+        manager(app)
+        return synchronized(lock) {
+            val text = if (summaryCached) {
+                cachedSummary
+            } else {
+                val done = storedLocked().filter { it.state == Download.STATE_COMPLETED }
+                DownloadData.summary(done.size, done.sumOf { it.bytes }).also {
+                    cachedSummary = it
+                    summaryCached = true
+                }
+            }
+            text to version.get()
         }
     }
 

@@ -68,9 +68,14 @@ object OfflinePlays {
     private fun file(context: Context) = File(context.filesDir, FILE)
 
     private fun writeLocked(context: Context, plays: List<OfflinePlay>) {
-        val encoded = encode(plays)
         val target = file(context)
         val temp = File(target.parentFile, "$FILE.tmp")
+        if (plays.isEmpty()) {
+            temp.delete()
+            target.delete()
+            return
+        }
+        val encoded = encode(plays)
         temp.writeText(encoded)
         if (!temp.renameTo(target)) {
             target.writeText(encoded)
@@ -90,13 +95,18 @@ object OfflinePlays {
     }
 
     fun send(context: Context) {
-        val settings = Settings(context)
+        val app = context.applicationContext
+        if (!SoundscapeApp.isPlaybackProcess(app)) {
+            AppBridgeProvider.call(app, AppBridgeProvider.METHOD_OFFLINE_PLAYS_SEND)
+            return
+        }
+        val settings = Settings(app)
         val server = settings.server ?: return
         val token = settings.token ?: return
         if (!sending.compareAndSet(false, true)) return
         try {
             repeat(MAX_BATCHES) {
-                val batch = waiting(context).take(BATCH_SIZE)
+                val batch = waiting(app).take(BATCH_SIZE)
                 if (batch.isEmpty()) return
                 val sent = runCatching {
                     Net.postJson(
@@ -110,7 +120,7 @@ object OfflinePlays {
                 }.getOrDefault(false)
                 if (!sent) return
                 synchronized(lock) {
-                    writeLocked(context, withoutSent(waiting(context), batch))
+                    writeLocked(app, withoutSent(waiting(app), batch))
                 }
             }
         } finally {

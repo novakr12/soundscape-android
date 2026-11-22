@@ -1,6 +1,5 @@
 package io.github.novakr12.soundscape
 
-import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.HttpURLConnection
@@ -11,6 +10,8 @@ data class HttpAnswer(val status: Int, val body: String?)
 object Net {
     val userAgent: String get() = "SoundscapeAndroid/${BuildConfig.VERSION_NAME}"
     const val DEFAULT_MAX_BYTES = 2 * 1024 * 1024
+    private const val INITIAL_BUFFER_BYTES = 4096
+    private const val MAX_DRAIN_BYTES = 4096
 
     fun open(
         address: String,
@@ -50,7 +51,12 @@ object Net {
         )
         return try {
             val status = connection.responseCode
-            val body = if (status in 200..299) readTextBounded(connection.inputStream, maxBytes) else null
+            val body = if (status in 200..299) {
+                readTextBounded(connection.inputStream, maxBytes)
+            } else {
+                drainQuietly(connection.errorStream)
+                null
+            }
             HttpAnswer(status, body)
         } finally {
             connection.disconnect()
@@ -78,9 +84,15 @@ object Net {
             connection.doOutput = true
             connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
             val status = connection.responseCode
-            val text = if (readResponse && status in 200..299) {
-                readTextBounded(connection.inputStream, maxBytes)
+            val text = if (status in 200..299) {
+                if (readResponse) {
+                    readTextBounded(connection.inputStream, maxBytes)
+                } else {
+                    drainQuietly(connection.inputStream)
+                    null
+                }
             } else {
+                drainQuietly(connection.errorStream)
                 null
             }
             HttpAnswer(status, text)
@@ -103,23 +115,49 @@ object Net {
             readTimeoutMs = readTimeoutMs,
         )
         return try {
-            connection.responseCode
+            val status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            drainQuietly(stream)
+            status
         } finally {
             connection.disconnect()
         }
     }
 
-    fun readTextBounded(input: InputStream, maxBytes: Int): String = input.use { stream ->
-        val out = ByteArrayOutputStream()
-        val buffer = ByteArray(8192)
-        var remaining = maxBytes
-        while (remaining > 0) {
-            val read = stream.read(buffer, 0, minOf(buffer.size, remaining))
-            if (read <= 0) break
-            out.write(buffer, 0, read)
-            remaining -= read
+    fun readTextBounded(input: InputStream, maxBytes: Int): String {
+        if (maxBytes <= 0) {
+            input.use {}
+            return ""
         }
-        String(out.toByteArray(), Charsets.UTF_8)
+        return input.use { stream ->
+            var buf = ByteArray(minOf(INITIAL_BUFFER_BYTES, maxBytes))
+            var total = 0
+            while (total < maxBytes) {
+                if (total == buf.size) {
+                    val nextSize = minOf(maxBytes, maxOf(buf.size * 2, total + 1))
+                    buf = buf.copyOf(nextSize)
+                }
+                val read = stream.read(buf, total, minOf(buf.size - total, maxBytes - total))
+                if (read <= 0) break
+                total += read
+            }
+            String(buf, 0, total, Charsets.UTF_8)
+        }
+    }
+
+    private fun drainQuietly(stream: InputStream?, maxBytes: Int = MAX_DRAIN_BYTES) {
+        if (stream == null) return
+        runCatching {
+            stream.use { input ->
+                val scratch = ByteArray(1024)
+                var remaining = maxBytes
+                while (remaining > 0) {
+                    val read = input.read(scratch, 0, minOf(scratch.size, remaining))
+                    if (read <= 0) break
+                    remaining -= read
+                }
+            }
+        }
     }
 
     fun copyBounded(input: InputStream, output: OutputStream, maxBytes: Long): Long {

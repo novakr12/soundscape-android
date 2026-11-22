@@ -18,12 +18,14 @@ class SongDownloadService : DownloadService(
     R.string.downloads_channel,
     0,
 ) {
+    private val helper by lazy { DownloadNotificationHelper(this, CHANNEL) }
+
     override fun getDownloadManager(): DownloadManager = Downloads.manager(this)
 
     override fun getScheduler(): Scheduler = PlatformScheduler(this, JOB_ID)
 
     override fun getForegroundNotification(downloads: MutableList<Download>, notMetRequirements: Int): Notification =
-        DownloadNotificationHelper(this, CHANNEL).buildProgressNotification(
+        helper.buildProgressNotification(
             this,
             R.drawable.ic_notification,
             null,

@@ -4,7 +4,6 @@ import android.os.Handler
 import android.os.Looper
 import org.json.JSONObject
 import java.net.HttpURLConnection
-import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import kotlin.concurrent.thread
 
@@ -17,7 +16,7 @@ class RemoteLink(
     private val obey: (RemoteCommand) -> Unit,
 ) {
     private val main = Handler(Looper.getMainLooper())
-    private val posts = Executors.newSingleThreadExecutor()
+    private val posts = Pools.serial("soundscape-remote-posts")
 
     @Volatile
     private var running = false
@@ -109,7 +108,7 @@ class RemoteLink(
 
     private fun disconnectOffMain(active: HttpURLConnection) {
         if (Looper.myLooper() == Looper.getMainLooper()) {
-            thread(name = "soundscape-device-close", isDaemon = true) {
+            Pools.io.execute {
                 runCatching { active.disconnect() }
             }
         } else {

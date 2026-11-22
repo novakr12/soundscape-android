@@ -3,11 +3,12 @@ package io.github.novakr12.soundscape
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.webkit.CookieManager
 import androidx.annotation.OptIn
+import androidx.core.content.ContextCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -20,19 +21,28 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSourceBitmapLoader
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.ResolvingDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.RenderersFactory
+import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.audio.MediaCodecAudioRenderer
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.CacheBitmapLoader
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionError
+import androidx.media3.session.SessionResult
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 import org.json.JSONObject
-import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 
 object Playback {
+    @Volatile
     var service: PlaybackService? = null
-    var runInPage: ((String) -> Unit)? = null
-    var readPage: ((reply: (PageState?) -> Unit) -> Unit)? = null
-    var reportToPage: ((String) -> Unit)? = null
 }
 
 @OptIn(UnstableApi::class)
@@ -41,41 +51,185 @@ class PlaybackService : MediaLibraryService() {
     private lateinit var session: MediaLibrarySession
     private lateinit var library: CarLibrary
     private val main = Handler(Looper.getMainLooper())
-    private val reporter = Executors.newSingleThreadExecutor()
-    private lateinit var discord: DiscordLink
+    private val reporter = Pools.serial("soundscape-report")
+    private var discord: DiscordLink? = null
+
+    @Volatile
     private var native: Native? = null
+
+    @Volatile
     private var destroyed = false
 
     val playingNatively: Boolean get() = native?.live == true
-    val playingForPage: Boolean get() = native?.let { it.live && it.fromPage } == true
+    val playingForPage: Boolean
+        get() {
+            val running = native ?: return false
+            return running.live && running.fromPage
+        }
 
     override fun onCreate() {
         super.onCreate()
-        discord = DiscordLink(this)
         pagePlayer = PagePlayer(
             Looper.getMainLooper(),
-            send = { script -> Playback.runInPage?.invoke(script) },
+            send = ::sendRunInPage,
             busy = { native != null },
             onItems = ::playFromCar,
             where = { name -> getString(R.string.playing_on, name) },
         )
-        library = CarLibrary(this)
+        library = CarLibrary(this, ::handleCustomCommand)
         val opens = PendingIntent.getActivity(
             this,
             0,
             Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        val bitmapLoader = CacheBitmapLoader(
+            DataSourceBitmapLoader.Builder(this)
+                .setDataSourceFactory(DefaultDataSource.Factory(this, withTokenForOwnOrigin()))
+                .setMaximumOutputDimension(MAX_ARTWORK_DIM_PX)
+                .build(),
+        )
         session = MediaLibrarySession.Builder(this, pagePlayer, library)
             .setSessionActivity(opens)
-            .setBitmapLoader(
-                DataSourceBitmapLoader.Builder(this).setDataSourceFactory(DefaultDataSource.Factory(this, withCookies())).build(),
-            )
+            .setBitmapLoader(bitmapLoader)
             .build()
         Playback.service = this
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession = session
+
+    private fun handleCustomCommand(command: SessionCommand, args: Bundle): ListenableFuture<SessionResult>? {
+        val result = when (command.customAction) {
+            PlaybackBridge.ACTION_SHOW_PAGE -> {
+                val state = args.getString(PlaybackBridge.KEY_STATE_JSON)?.let(Bridge::parse)
+                val server = args.getString(PlaybackBridge.KEY_SERVER) ?: ""
+                showPage(state, server)
+                SessionResult(SessionResult.RESULT_SUCCESS)
+            }
+            PlaybackBridge.ACTION_TAKE_OVER -> {
+                val state = Bridge.parse(args.getString(PlaybackBridge.KEY_STATE_JSON))
+                val server = args.getString(PlaybackBridge.KEY_SERVER)
+                if (state == null || server.isNullOrEmpty()) {
+                    SessionResult(SessionError.ERROR_BAD_VALUE)
+                } else {
+                    val token = args.getString(PlaybackBridge.KEY_TOKEN) ?: ""
+                    val readAt = args.getLong(PlaybackBridge.KEY_READ_AT, SystemClock.elapsedRealtime())
+                    takeOver(state, server, token, readAt)
+                    SessionResult(SessionResult.RESULT_SUCCESS)
+                }
+            }
+            PlaybackBridge.ACTION_OBEY_PAGE -> {
+                val item = args.getString(PlaybackBridge.KEY_COMMAND_JSON)
+                    ?.let { raw -> runCatching { JSONObject(raw) }.getOrNull() }
+                val parsed = Remote.command(item)
+                if (parsed == null) {
+                    SessionResult(SessionError.ERROR_BAD_VALUE)
+                } else {
+                    obeyPage(parsed)
+                    SessionResult(SessionResult.RESULT_SUCCESS)
+                }
+            }
+            PlaybackBridge.ACTION_TELL_PAGE -> {
+                val report = currentReportJson()
+                tellPage()
+                SessionResult(
+                    SessionResult.RESULT_SUCCESS,
+                    Bundle().apply { report?.let { putString(PlaybackBridge.KEY_REPORT_JSON, it) } },
+                )
+            }
+            PlaybackBridge.ACTION_PLAY_DOWNLOADS -> {
+                val tracks = PlaybackCodecs.decodeTracks(args.getString(PlaybackBridge.KEY_TRACKS_JSON))
+                val index = args.getInt(PlaybackBridge.KEY_INDEX, 0)
+                if (tracks.isEmpty()) {
+                    SessionResult(SessionError.ERROR_BAD_VALUE)
+                } else {
+                    playDownloads(tracks, index)
+                    SessionResult(SessionResult.RESULT_SUCCESS)
+                }
+            }
+            PlaybackBridge.ACTION_HAND_BACK_STATE -> {
+                val back = handBackState()
+                SessionResult(
+                    SessionResult.RESULT_SUCCESS,
+                    Bundle().apply {
+                        back?.let { putString(PlaybackBridge.KEY_HAND_BACK_JSON, PlaybackCodecs.encodeHandBack(it)) }
+                    },
+                )
+            }
+            PlaybackBridge.ACTION_HAND_BACK_START -> {
+                startHandBack()
+                SessionResult(SessionResult.RESULT_SUCCESS)
+            }
+            PlaybackBridge.ACTION_HAND_BACK_ABANDON -> {
+                abandonHandBack()
+                SessionResult(SessionResult.RESULT_SUCCESS)
+            }
+            PlaybackBridge.ACTION_HAND_BACK_FINISH -> {
+                finishHandBack()
+                SessionResult(SessionResult.RESULT_SUCCESS)
+            }
+            else -> return null
+        }
+        return Futures.immediateFuture(result)
+    }
+
+    private fun pageController(): MediaSession.ControllerInfo? {
+        if (!::session.isInitialized) return null
+        return session.connectedControllers.lastOrNull { controller ->
+            controller.packageName == packageName &&
+                controller.connectionHints.getBoolean(PlaybackBridge.HINT_PAGE_CLIENT, false)
+        }
+    }
+
+    private fun sendRunInPage(script: String) {
+        if (destroyed) return
+        val target = pageController() ?: return
+        session.sendCustomCommand(
+            target,
+            PlaybackBridge.EVENT_RUN_IN_PAGE,
+            Bundle().apply { putString(PlaybackBridge.KEY_SCRIPT, script) },
+        )
+    }
+
+    private fun sendReportToPage(json: String) {
+        if (destroyed) return
+        val target = pageController() ?: return
+        session.sendCustomCommand(
+            target,
+            PlaybackBridge.EVENT_REPORT_TO_PAGE,
+            Bundle().apply { putString(PlaybackBridge.KEY_REPORT_JSON, json) },
+        )
+    }
+
+    private fun sendNativeState() {
+        if (destroyed) return
+        val target = pageController() ?: return
+        session.sendCustomCommand(
+            target,
+            PlaybackBridge.EVENT_NATIVE_STATE,
+            Bundle().apply {
+                putBoolean(PlaybackBridge.KEY_PLAYING_NATIVELY, playingNatively)
+                putBoolean(PlaybackBridge.KEY_PLAYING_FOR_PAGE, playingForPage)
+            },
+        )
+    }
+
+    private fun requestReadPage(reply: (PageState?) -> Unit) {
+        if (destroyed) {
+            reply(null)
+            return
+        }
+        val target = pageController()
+        if (target == null) {
+            reply(null)
+            return
+        }
+        val future = session.sendCustomCommand(target, PlaybackBridge.EVENT_READ_PAGE, Bundle.EMPTY)
+        future.addListener({
+            val raw = runCatching { future.get().extras.getString(PlaybackBridge.KEY_STATE_JSON) }.getOrNull()
+            reply(Bridge.parse(raw))
+        }, ContextCompat.getMainExecutor(this))
+    }
 
     fun showPage(state: PageState?, server: String) {
         if (destroyed || !::pagePlayer.isInitialized) return
@@ -95,6 +249,7 @@ class PlaybackService : MediaLibraryService() {
             session.player = pagePlayer
         }
         running.release()
+        sendNativeState()
     }
 
     fun clearLibrary() {
@@ -102,8 +257,16 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private fun updateDiscord(force: Boolean = false) {
-        if (destroyed || !::discord.isInitialized) return
-        discord.update(currentDiscord(), force = force)
+        if (destroyed) return
+        val settings = Settings(this)
+        val wanted = settings.discord && settings.discordAppId?.let(Discord::validAppId) == true
+        if (!wanted) {
+            discord?.stop()
+            discord = null
+            return
+        }
+        val link = discord ?: DiscordLink(this).also { discord = it }
+        link.update(currentDiscord(), force = force)
     }
 
     private fun currentDiscord(): DiscordSource? {
@@ -153,20 +316,24 @@ class PlaybackService : MediaLibraryService() {
         tellPage()
     }
 
-    fun tellPage() {
-        if (destroyed || !::pagePlayer.isInitialized) return
-        val json = native?.report() ?: Remote.report(
+    private fun currentReportJson(): String? {
+        if (destroyed || !::pagePlayer.isInitialized) return null
+        return native?.report() ?: Remote.report(
             Settings(this).deviceId,
             Remote.deviceName(Build.MODEL),
             RemoteSnapshot(null, false, 0.0, null, pagePlayer.shown?.volume ?: DEFAULT_VOLUME),
         )
-        Playback.reportToPage?.invoke(json)
+    }
+
+    fun tellPage() {
+        val json = currentReportJson() ?: return
+        sendReportToPage(json)
     }
 
     fun playDownloads(tracks: List<BridgeTrack>, at: Int) {
         if (destroyed || tracks.isEmpty()) return
         stopNative()
-        Playback.runInPage?.invoke(Bridge.command("pause"))
+        sendRunInPage(Bridge.command("pause"))
         val settings = Settings(this)
         val state = PageState(tracks, at.coerceIn(tracks.indices), 0.0, null, true, 1.0, "off")
         start(state, settings.server ?: OFFLINE, settings.token.orEmpty(), fromPage = false)
@@ -197,7 +364,25 @@ class PlaybackService : MediaLibraryService() {
         catchUp: Boolean = false,
         playWhenReady: Boolean = true,
     ): Native {
-        val player = ExoPlayer.Builder(this)
+        val renderersFactory = RenderersFactory { eventHandler, _, audioListener, _, _ ->
+            arrayOf(
+                MediaCodecAudioRenderer(
+                    this,
+                    MediaCodecSelector.DEFAULT,
+                    true,
+                    eventHandler,
+                    audioListener,
+                    DefaultAudioSink.Builder(this).build(),
+                ),
+            )
+        }
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(15_000, 30_000, 2_500, 5_000)
+            .setTargetBufferBytes(EXO_TARGET_BUFFER_BYTES)
+            .setPrioritizeTimeOverSizeThresholds(false)
+            .build()
+        val player = ExoPlayer.Builder(this, renderersFactory)
+            .setLoadControl(loadControl)
             .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(Downloads.playing(this)))
             .setAudioAttributes(MUSIC, !catchUp)
             .setHandleAudioBecomingNoisy(true)
@@ -219,6 +404,7 @@ class PlaybackService : MediaLibraryService() {
         return running
     }
 
+    @Volatile
     var handingBack = false
         private set
 
@@ -268,7 +454,8 @@ class PlaybackService : MediaLibraryService() {
         val running = native
         native = null
         running?.release(notify = false)
-        if (::discord.isInitialized) discord.stop()
+        discord?.stop()
+        discord = null
         if (::session.isInitialized) session.release()
         if (::library.isInitialized) library.release()
         if (::pagePlayer.isInitialized) pagePlayer.release()
@@ -277,15 +464,21 @@ class PlaybackService : MediaLibraryService() {
         super.onDestroy()
     }
 
-    private fun withCookies(): DataSource.Factory {
+    private fun withTokenForOwnOrigin(): DataSource.Factory {
         val app = applicationContext
-        return DataSource.Factory {
-            val cookies = CookieManager.getInstance()
-            val factory = DefaultHttpDataSource.Factory().setUserAgent(Net.userAgent)
-            val server = Settings(app).server
-            val cookie = server?.let { cookies.getCookie(it) }
-            if (cookie != null) factory.setDefaultRequestProperties(mapOf("Cookie" to cookie))
-            factory.createDataSource()
+        val http = DefaultHttpDataSource.Factory().setUserAgent(Net.userAgent)
+        return ResolvingDataSource.Factory(http) { dataSpec ->
+            val settings = Settings(app)
+            val token = settings.token
+            val expectedOrigin = settings.server?.let(Server::origin)
+            val requestOrigin = Server.origin(dataSpec.uri.toString())
+            if (!token.isNullOrEmpty() && expectedOrigin != null && requestOrigin == expectedOrigin) {
+                val headers = HashMap(dataSpec.httpRequestHeaders)
+                headers["Authorization"] = "Token $token"
+                dataSpec.buildUpon().setHttpRequestHeaders(headers).build()
+            } else {
+                dataSpec
+            }
         }
     }
 
@@ -330,6 +523,7 @@ class PlaybackService : MediaLibraryService() {
         val token: String,
         val fromPage: Boolean,
     ) : Player.Listener {
+        @Volatile
         var live = false
         var syncing = false
         var since = 0L
@@ -349,7 +543,7 @@ class PlaybackService : MediaLibraryService() {
         private var refillingFor: String? = null
         private var refillRetryAt = 0L
         private var unshuffled: List<BridgeTrack>? = null
-        private var shuffling = false
+        private var mutatingTimeline = false
         private var consecutiveErrors = 0
         private val tick = object : Runnable {
             override fun run() {
@@ -357,12 +551,15 @@ class PlaybackService : MediaLibraryService() {
                 follow()
                 keepGoing()
                 updateDiscord()
-                main.postDelayed(this, TICK_MS)
+                if (player.isPlaying) {
+                    main.postDelayed(this, TICK_MS)
+                }
             }
         }
 
         private fun keepGoing() {
             val index = player.currentMediaItemIndex
+            if (index !in tracks.indices) return
             val left = player.mediaItemCount - index - 1
             val autoplay = Settings(this@PlaybackService).autoplay
             if (!Radio.needsMore(autoplay, player.repeatMode == Player.REPEAT_MODE_OFF, left)) return
@@ -377,8 +574,10 @@ class PlaybackService : MediaLibraryService() {
                 return
             }
             refillingFor = seed.trackId
-            val exclude = tracks.drop(index).mapNotNull { it.songId }
-            val body = Radio.body(seed, exclude, tracks.map { it.trackId })
+            val exclude = tracks.subList(index, tracks.size).mapNotNull { it.songId }
+            val skipStart = (tracks.size - Radio.REMEMBERS).coerceAtLeast(0)
+            val skipIds = tracks.subList(skipStart, tracks.size).map { it.trackId }
+            val body = Radio.body(seed, exclude, skipIds)
             onReporter {
                 val songs = runCatching { Radio.fetch(server, token, body) }.getOrNull()
                 main.post {
@@ -391,9 +590,42 @@ class PlaybackService : MediaLibraryService() {
                     if (tracks.getOrNull(player.currentMediaItemIndex)?.trackId != seed.trackId) return@post
                     refilledAfter = seed.trackId
                     refillRetryAt = 0L
-                    songs.forEach { obey(RemoteCommand.Enqueue(it, false)) }
+                    enqueueAll(songs)
                     changed()
                 }
+            }
+        }
+
+        private fun enqueueAll(songs: List<BridgeTrack>) {
+            if (songs.isEmpty()) return
+            val updated = ArrayList<BridgeTrack>(tracks.size + songs.size).apply {
+                addAll(tracks)
+                addAll(songs)
+            }
+            tracks = updated
+            unshuffled = unshuffled?.let { it + songs }
+            replaced = true
+            mutatingTimeline = true
+            try {
+                player.addMediaItems(itemsFor(server, songs))
+            } finally {
+                mutatingTimeline = false
+            }
+            pruneHistory()
+        }
+
+        private fun pruneHistory() {
+            val index = player.currentMediaItemIndex
+            if (index <= MAX_HISTORY) return
+            val drop = minOf(index - MAX_HISTORY, tracks.size, player.mediaItemCount)
+            if (drop <= 0) return
+            tracks = tracks.subList(drop, tracks.size).toList()
+            announced = if (announced >= drop) announced - drop else -1
+            mutatingTimeline = true
+            try {
+                player.removeMediaItems(0, drop)
+            } finally {
+                mutatingTimeline = false
             }
         }
 
@@ -444,14 +676,9 @@ class PlaybackService : MediaLibraryService() {
 
         private fun askPageAgain() {
             if (refining) return
-            val read = Playback.readPage
-            if (read == null) {
-                refined = true
-                return
-            }
             refining = true
             val asked = SystemClock.elapsedRealtime()
-            read { fresh ->
+            requestReadPage { fresh ->
                 if (this@PlaybackService.native === this && syncing) {
                     val answered = SystemClock.elapsedRealtime()
                     if (fresh != null &&
@@ -481,8 +708,9 @@ class PlaybackService : MediaLibraryService() {
             if (live || this@PlaybackService.native !== this) return
             live = true
             session.player = player
-            if (fromPage) Playback.runInPage?.invoke(Bridge.command("pause"))
-            Playback.runInPage?.invoke(Remote.holdScript(true))
+            if (fromPage) sendRunInPage(Bridge.command("pause"))
+            sendRunInPage(Remote.holdScript(true))
+            sendNativeState()
             connect()
             announce()
             updateDiscord()
@@ -494,7 +722,17 @@ class PlaybackService : MediaLibraryService() {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) consecutiveErrors = 0
             changed()
-            if (!isPlaying || live) return
+            if (live) {
+                main.removeCallbacks(tick)
+                if (isPlaying) {
+                    main.post(tick)
+                } else {
+                    before = null
+                    updateDiscord()
+                }
+                return
+            }
+            if (!isPlaying) return
             if (!syncing) {
                 goLive()
                 return
@@ -506,6 +744,7 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            pruneHistory()
             player.volume = volumeAt(player.currentMediaItemIndex)
             heard = 0.0
             before = null
@@ -531,7 +770,7 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
-            if (shuffling || reason != Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) return
+            if (mutatingTimeline || reason != Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) return
             changed()
             val now = (0 until player.mediaItemCount).map {
                 Car.trackFrom(player.getMediaItemAt(it).mediaMetadata.extras?.getString(CarLibrary.TRACK))
@@ -553,7 +792,12 @@ class PlaybackService : MediaLibraryService() {
             refillingFor = null
             refillRetryAt = 0L
             consecutiveErrors = 0
-            player.setMediaItems(itemsFor(server, next), position, (time * 1000).toLong())
+            mutatingTimeline = true
+            try {
+                player.setMediaItems(itemsFor(server, next), position, (time * 1000).toLong())
+            } finally {
+                mutatingTimeline = false
+            }
             player.volume = volumeAt(position)
             player.prepare()
             player.playWhenReady = playing
@@ -566,25 +810,26 @@ class PlaybackService : MediaLibraryService() {
             val original = unshuffled
             val wanted = when {
                 on && original == null -> {
-                    unshuffled = tracks.drop(from)
-                    Shuffle.shuffled(tracks.drop(from))
+                    val upcoming = tracks.subList(from, tracks.size).toList()
+                    unshuffled = upcoming
+                    Shuffle.shuffled(upcoming)
                 }
                 !on && original != null -> {
                     unshuffled = null
-                    Shuffle.restored(original, tracks.drop(from))
+                    Shuffle.restored(original, tracks.subList(from, tracks.size))
                 }
                 else -> return
             }
             val order = tracks.toMutableList()
             val moves = Shuffle.moves(order, wanted, from)
-            shuffling = true
+            mutatingTimeline = true
             try {
                 for ((at, to) in moves) {
                     order.add(to, order.removeAt(at))
                     player.moveMediaItem(at, to)
                 }
             } finally {
-                shuffling = false
+                mutatingTimeline = false
             }
             tracks = order
             replaced = true
@@ -626,7 +871,7 @@ class PlaybackService : MediaLibraryService() {
         private fun changed() {
             if (this@PlaybackService.native !== this) return
             link?.reportSoon()
-            Playback.reportToPage?.invoke(report())
+            sendReportToPage(report())
             if (live) updateDiscord()
         }
 
@@ -649,7 +894,11 @@ class PlaybackService : MediaLibraryService() {
                 Player.REPEAT_MODE_ONE -> "one"
                 else -> "off"
             }
-            val upNext = tracks.drop(index + 1).take(Remote.MOST_UP_NEXT)
+            val upNext = if (index >= 0 && index + 1 < tracks.size) {
+                tracks.subList(index + 1, minOf(tracks.size, index + 1 + Remote.MOST_UP_NEXT)).toList()
+            } else {
+                emptyList()
+            }
             return RemoteSnapshot(
                 track,
                 going,
@@ -695,7 +944,12 @@ class PlaybackService : MediaLibraryService() {
                     tracks = tracks.toMutableList().apply { add(at.coerceAtMost(size), command.track) }
                     unshuffled = unshuffled?.let { if (command.next) listOf(command.track) + it else it + command.track }
                     replaced = true
-                    player.addMediaItem(at, CarLibrary.playableItem(this@PlaybackService, server, command.track))
+                    mutatingTimeline = true
+                    try {
+                        player.addMediaItem(at, CarLibrary.playableItem(this@PlaybackService, server, command.track))
+                    } finally {
+                        mutatingTimeline = false
+                    }
                 }
                 is RemoteCommand.Send -> {
                     val body = Remote.send(
@@ -753,7 +1007,7 @@ class PlaybackService : MediaLibraryService() {
         fun release(notify: Boolean = true) {
             link?.stop()
             link = null
-            if (live) Playback.runInPage?.invoke(Remote.holdScript(false))
+            if (live) sendRunInPage(Remote.holdScript(false))
             main.removeCallbacks(tick)
             main.removeCallbacks(sync)
             player.removeListener(this)
@@ -777,6 +1031,9 @@ class PlaybackService : MediaLibraryService() {
         const val SETTLE_MS = 300L
         const val REFILL_RETRY_MS = 15_000L
         const val MAX_CONSECUTIVE_ERRORS = 3
+        const val MAX_HISTORY = 100
+        const val MAX_ARTWORK_DIM_PX = 512
+        const val EXO_TARGET_BUFFER_BYTES = 4 * 1024 * 1024
         val MUSIC: AudioAttributes =
             AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
         const val OFFLINE = CarLibrary.OFFLINE

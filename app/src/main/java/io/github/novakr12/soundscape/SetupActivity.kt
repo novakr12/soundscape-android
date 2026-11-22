@@ -11,10 +11,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
-import java.util.concurrent.Executors
 
 class SetupActivity : AppCompatActivity() {
-    private val worker = Executors.newSingleThreadExecutor()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -37,7 +35,7 @@ class SetupActivity : AppCompatActivity() {
             } else {
                 connect.isEnabled = false
                 status.text = getString(R.string.setup_checking)
-                worker.execute {
+                Pools.io.execute {
                     val problem = check(server)
                     runOnUiThread {
                         if (isFinishing || isDestroyed) return@runOnUiThread
@@ -82,11 +80,6 @@ class SetupActivity : AppCompatActivity() {
         }
     } catch (error: Exception) {
         getString(R.string.setup_unreachable, error.localizedMessage ?: error.javaClass.simpleName)
-    }
-
-    override fun onDestroy() {
-        worker.shutdown()
-        super.onDestroy()
     }
 
     private companion object {

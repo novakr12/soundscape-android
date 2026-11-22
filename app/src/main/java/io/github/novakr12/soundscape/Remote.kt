@@ -35,26 +35,41 @@ data class RemoteSnapshot(
 class EventReader {
     private var event = "message"
     private val data = StringBuilder()
+    private var dropped = false
 
     fun line(text: String): Pair<String, String>? {
         if (text.isEmpty()) {
-            val done = if (data.isEmpty()) null else event to data.toString()
+            val done = if (dropped || data.isEmpty()) null else event to data.toString()
             event = "message"
+            dropped = false
             data.setLength(0)
+            if (data.capacity() > TRIM_BUFFER_ABOVE) data.trimToSize()
             return done
         }
-        if (text.startsWith(":")) return null
+        if (dropped || text.startsWith(":")) return null
         val at = text.indexOf(':')
         val field = if (at == -1) text else text.substring(0, at)
         val value = if (at == -1) "" else text.substring(at + 1).removePrefix(" ")
         when (field) {
             "event" -> event = value
             "data" -> {
+                val extra = if (data.isEmpty()) value.length else value.length + 1
+                if (data.length + extra > MAX_EVENT_CHARS) {
+                    dropped = true
+                    data.setLength(0)
+                    if (data.capacity() > TRIM_BUFFER_ABOVE) data.trimToSize()
+                    return null
+                }
                 if (data.isNotEmpty()) data.append('\n')
                 data.append(value)
             }
         }
         return null
+    }
+
+    private companion object {
+        const val MAX_EVENT_CHARS = 256 * 1024
+        const val TRIM_BUFFER_ABOVE = 4096
     }
 }
 

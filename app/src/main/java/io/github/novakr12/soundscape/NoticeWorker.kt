@@ -51,6 +51,7 @@ class NoticeWorker(context: Context, parameters: WorkerParameters) : Worker(cont
     }
 
     private fun checkRecap(context: Context, settings: Settings, server: String, token: String) {
+        if (!Extras.shouldCheckRecap(java.time.LocalDate.now(), settings.lastRecap)) return
         val (status, body) = fetch("$server/api/recap/week", token) ?: return
         if (status != 200 || body == null) return
         val (show, recap) = Extras.recap(body) ?: return
@@ -60,9 +61,6 @@ class NoticeWorker(context: Context, parameters: WorkerParameters) : Worker(cont
     }
 
     private fun checkStreak(context: Context, settings: Settings, server: String, token: String) {
-        val (status, body) = fetch("$server/api/today", token) ?: return
-        if (status != 200 || body == null) return
-        val today = Extras.today(body) ?: return
         val now = java.util.Calendar.getInstance()
         val date = String.format(
             java.util.Locale.US,
@@ -72,6 +70,10 @@ class NoticeWorker(context: Context, parameters: WorkerParameters) : Worker(cont
             now.get(java.util.Calendar.DAY_OF_MONTH),
         )
         val hour = now.get(java.util.Calendar.HOUR_OF_DAY)
+        if (!Extras.shouldCheckStreak(hour, date, settings.lastReminder)) return
+        val (status, body) = fetch("$server/api/today", token) ?: return
+        if (status != 200 || body == null) return
+        val today = Extras.today(body) ?: return
         if (!Extras.remind(today, hour, date, true, settings.lastReminder)) return
         settings.lastReminder = date
         post(context, Shown(Extras.reminderTitle(today), Extras.REMINDER_BODY, "/"))

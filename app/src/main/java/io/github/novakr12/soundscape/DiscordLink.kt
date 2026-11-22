@@ -17,7 +17,6 @@ import android.os.SystemClock
 import android.util.Log
 import org.json.JSONObject
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -28,12 +27,7 @@ class DiscordLink(context: Context) {
 
     private val app = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
-    private val worker = Executors.newSingleThreadExecutor { run ->
-        Thread(run, "soundscape-discord").apply { isDaemon = true }
-    }
-    private val handshakes = Executors.newSingleThreadExecutor { run ->
-        Thread(run, "soundscape-discord-handshake").apply { isDaemon = true }
-    }
+    private val worker = Pools.serial("soundscape-discord")
     private val handshakeBusy = AtomicBoolean(false)
     private val lock = Any()
     private var desired: DiscordSource? = null
@@ -82,7 +76,6 @@ class DiscordLink(context: Context) {
             dirty = false
         }
         main.removeCallbacks(idleDisconnect)
-        handshakes.shutdownNow()
         runOnWorker {
             clearAndClose()
         }
@@ -349,7 +342,7 @@ class DiscordLink(context: Context) {
         var timedOut = false
         var connection: IBinder? = null
         try {
-            handshakes.execute {
+            Pools.io.execute {
                 try {
                     val result = runCatching { connectBinder(service, appId, callback) }.getOrNull()
                     val stale = synchronized(handshakeLock) {

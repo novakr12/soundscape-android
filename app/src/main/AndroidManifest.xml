@@ -18,6 +18,7 @@
     </queries>
 
     <application
+        android:name=".SoundscapeApp"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -54,6 +55,7 @@
             android:name=".PlaybackService"
             android:exported="true"
             android:foregroundServiceType="mediaPlayback"
+            android:process=":playback"
             tools:ignore="ExportedService">
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaLibraryService" />
@@ -65,12 +67,20 @@
             android:name=".CoverProvider"
             android:authorities="${applicationId}.covers"
             android:exported="true"
+            android:process=":playback"
             tools:ignore="ExportedContentProvider" />
+
+        <provider
+            android:name=".AppBridgeProvider"
+            android:authorities="${applicationId}.bridge"
+            android:exported="false"
+            android:process=":playback" />
 
         <service
             android:name=".SongDownloadService"
             android:exported="false"
-            android:foregroundServiceType="dataSync">
+            android:foregroundServiceType="dataSync"
+            android:process=":playback">
             <intent-filter>
                 <action android:name="androidx.media3.exoplayer.downloadService.action.RESTART" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -80,7 +90,8 @@
         <service
             android:name="androidx.media3.exoplayer.scheduler.PlatformScheduler$PlatformSchedulerService"
             android:exported="true"
-            android:permission="android.permission.BIND_JOB_SERVICE" />
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:process=":playback" />
 
         <activity
             android:name=".DownloadsActivity"

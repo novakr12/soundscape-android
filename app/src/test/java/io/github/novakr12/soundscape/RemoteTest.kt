@@ -127,6 +127,13 @@ class RemoteTest {
         assertTrue(Remote.isForMe(events[0].second, "phone000001"))
         assertFalse(Remote.isForMe(events[0].second, "other000001"))
         assertFalse(Remote.isForMe("nope", "phone000001"))
+
+        val huge = "a".repeat(300_000)
+        assertNull(reader.line("event: command"))
+        assertNull(reader.line("data: $huge"))
+        assertNull(reader.line(""))
+        assertNull(reader.line("data: ok"))
+        assertEquals("message" to "ok", reader.line(""))
     }
 
     @Test

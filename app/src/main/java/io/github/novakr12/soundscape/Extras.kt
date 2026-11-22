@@ -1,6 +1,9 @@
 package io.github.novakr12.soundscape
 
 import org.json.JSONObject
+import java.time.DayOfWeek
+import java.time.LocalDate
+import java.time.temporal.ChronoUnit
 
 data class Recap(val from: String, val plays: Long, val listeningMs: Long, val topArtist: String?, val rank: Int?, val of: Int?)
 
@@ -30,6 +33,19 @@ object Extras {
     }
 
     fun recapDue(show: Boolean, recap: Recap?, last: String?) = show && recap != null && recap.from != last
+
+    fun shouldCheckRecap(today: LocalDate, lastRecap: String?): Boolean {
+        when (today.dayOfWeek) {
+            DayOfWeek.THURSDAY, DayOfWeek.FRIDAY, DayOfWeek.SATURDAY -> return false
+            else -> {}
+        }
+        val prev = lastRecap?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: return true
+        val elapsedDays = ChronoUnit.DAYS.between(prev, today)
+        return elapsedDays !in 0L..11L
+    }
+
+    fun shouldCheckStreak(hour: Int, date: String, lastReminder: String?) =
+        hour >= REMINDER_HOUR && lastReminder != date
 
     fun recapBody(recap: Recap): String {
         val parts = mutableListOf(if (recap.plays == 1L) "1 play" else "${recap.plays} plays", duration(recap.listeningMs))

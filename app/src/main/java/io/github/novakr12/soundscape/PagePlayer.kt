@@ -2,6 +2,7 @@ package io.github.novakr12.soundscape
 
 import android.net.Uri
 import android.os.Looper
+import android.os.SystemClock
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -11,6 +12,7 @@ import androidx.media3.common.SimpleBasePlayer
 import androidx.media3.common.util.UnstableApi
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import kotlin.math.abs
 
 @OptIn(UnstableApi::class)
 class PagePlayer(
@@ -22,11 +24,39 @@ class PagePlayer(
 ) : SimpleBasePlayer(looper) {
     private var page: PageState? = null
     private var server = ""
+    private var updatedAtMs = 0L
 
     fun show(state: PageState?, server: String) {
-        page = state?.let { Bridge.lockScreen(it, where) }
+        val next = state?.let { Bridge.lockScreen(it, where) }
+        val prev = page
+        if (next == null && prev == null && this.server == server) return
+        val now = SystemClock.elapsedRealtime()
+        val notify = !(next == null && prev == null) &&
+            !(next != null && prev != null && this.server == server && sameSessionState(prev, next, now))
+        page = next
         this.server = server
+        if (!notify) return
+        updatedAtMs = now
         invalidateState()
+    }
+
+    private fun sameSessionState(prev: PageState, next: PageState, now: Long): Boolean {
+        if (prev.playing != next.playing ||
+            prev.position != next.position ||
+            prev.repeat != next.repeat ||
+            prev.duration != next.duration ||
+            prev.remote != next.remote ||
+            prev.tracks != next.tracks
+        ) {
+            return false
+        }
+        val expectedTime = if (next.playing) {
+            prev.time + (now - updatedAtMs).coerceAtLeast(0L) / 1000.0
+        } else {
+            prev.time
+        }
+        val tolerance = if (next.playing) PLAYING_TIME_DRIFT_S else PAUSED_TIME_DRIFT_S
+        return abs(next.time - expectedTime) < tolerance
     }
 
     val shown: PageState? get() = page
@@ -129,6 +159,9 @@ class PagePlayer(
     }
 
     companion object {
+        private const val PAUSED_TIME_DRIFT_S = 0.5
+        private const val PLAYING_TIME_DRIFT_S = 1.5
+
         fun mediaItemFor(server: String, track: BridgeTrack): MediaItem {
             val metadata = MediaMetadata.Builder()
                 .setTitle(track.title)
