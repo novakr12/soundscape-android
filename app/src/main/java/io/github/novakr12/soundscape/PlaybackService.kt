@@ -24,6 +24,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.RenderersFactory
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.MediaCodecAudioRenderer
@@ -399,14 +400,27 @@ class PlaybackService : MediaLibraryService() {
     ): Native {
         val renderersFactory = RenderersFactory { eventHandler, _, audioListener, _, _ ->
             arrayOf(
-                MediaCodecAudioRenderer(
+                object : MediaCodecAudioRenderer(
                     this,
                     MediaCodecSelector.DEFAULT,
                     true,
                     eventHandler,
                     audioListener,
                     SpectrumSink(DefaultAudioSink.Builder(this).build(), spectrum),
-                ),
+                ) {
+                    override fun getDurationToProgressUs(
+                        positionUs: Long,
+                        elapsedRealtimeUs: Long,
+                        isOnBufferAvailableListenerRegistered: Boolean,
+                    ): Long {
+                        val wait = super.getDurationToProgressUs(
+                            positionUs,
+                            elapsedRealtimeUs,
+                            isOnBufferAvailableListenerRegistered,
+                        )
+                        return if (getState() == Renderer.STATE_STARTED) spectrum.wakeWithinUs(wait) else wait
+                    }
+                },
             )
         }
         val loadControl = DefaultLoadControl.Builder()
@@ -1058,7 +1072,7 @@ class PlaybackService : MediaLibraryService() {
 
     private companion object {
         const val TICK_MS = 1000L
-        const val SPECTRUM_TICK_MS = 45L
+        const val SPECTRUM_TICK_MS = 16L
         const val TAKE_OVER_WITHIN_MS = 12_000L
         const val SYNC_WITHIN_MS = 6_000L
         const val SYNC_STEP_MS = 50L

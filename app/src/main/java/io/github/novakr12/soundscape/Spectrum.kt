@@ -55,7 +55,8 @@ class Spectrum {
 
     fun hear(buffer: ByteBuffer, timeUs: Long) {
         if (!on) {
-            if (latest != null || ahead.isNotEmpty() || filled > 0) clear()
+            latest = null
+            if (frames > 0) restart()
             return
         }
         if (timeUs == takenUs || rate <= 0 || channels <= 0 || sampleBytes == 0) return
@@ -73,7 +74,8 @@ class Spectrum {
             filled = 0
             addWindow()
             if (frames < wanted) continue
-            ahead.addLast(Reading(timeUs + frame * 1_000_000L / rate, bins()))
+            val middle = frame - frames / 2
+            ahead.addLast(Reading(timeUs + middle * 1_000_000L / rate, bins()))
             if (ahead.size > MOST_AHEAD) ahead.removeFirst()
             restart()
         }
@@ -82,6 +84,8 @@ class Spectrum {
     fun playedTo(positionUs: Long) {
         while (ahead.isNotEmpty() && ahead.first().atUs <= positionUs) latest = ahead.removeFirst().bins
     }
+
+    fun wakeWithinUs(durationUs: Long): Long = if (on) minOf(durationUs, WAKE_US) else durationUs
 
     fun clear() {
         ahead.clear()
@@ -163,6 +167,7 @@ class Spectrum {
         private const val SIZE = BINS * 2
         private const val EVERY_MS = 45
         private const val MOST_AHEAD = 128
+        private const val WAKE_US = 10_000L
 
         private const val MIN_DB = -65.0
         private const val MAX_DB = -14.0

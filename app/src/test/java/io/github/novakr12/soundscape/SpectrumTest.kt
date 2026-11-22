@@ -66,9 +66,9 @@ class SpectrumTest {
         val spectrum = listening(C.ENCODING_PCM_16BIT)
         val start = 1_000_000_000_000L
         spectrum.hear(tone(1000.0, C.ENCODING_PCM_16BIT), start)
-        spectrum.playedTo(start + 20_000)
+        spectrum.playedTo(start + 15_000)
         assertNull(spectrum.latest)
-        spectrum.playedTo(start + 60_000)
+        spectrum.playedTo(start + 30_000)
         assertTrue(spectrum.latest != null)
     }
 
@@ -93,6 +93,28 @@ class SpectrumTest {
         spectrum.hear(tone(1000.0, C.ENCODING_PCM_16BIT), 0)
         spectrum.playedTo(1_000_000)
         assertNull(spectrum.latest)
+    }
+
+    @Test
+    fun wakesThePlayerOftenOnlyWhileWatched() {
+        val spectrum = listening(C.ENCODING_PCM_16BIT)
+        assertEquals(10_000L, spectrum.wakeWithinUs(375_000))
+        assertEquals(5_000L, spectrum.wakeWithinUs(5_000))
+        spectrum.on = false
+        assertEquals(375_000L, spectrum.wakeWithinUs(375_000))
+    }
+
+    @Test
+    fun keepsWhatIsBufferedThroughAPause() {
+        val spectrum = listening(C.ENCODING_PCM_16BIT)
+        val pcm = tone(1000.0, C.ENCODING_PCM_16BIT)
+        spectrum.hear(pcm, 0)
+        spectrum.on = false
+        spectrum.hear(pcm, 0)
+        assertNull(spectrum.latest)
+        spectrum.on = true
+        spectrum.playedTo(100_000)
+        assertTrue(spectrum.latest != null)
     }
 
     @Test
