@@ -60,7 +60,7 @@ class CarLibrary(
         controller: MediaSession.ControllerInfo,
     ): MediaSession.ConnectionResult {
         val base = super.onConnect(session, controller)
-        if (controller.packageName != app.packageName) return base
+        if (controller.packageName != app.packageName || session.isMediaNotificationController(controller)) return base
         val commands = base.availableSessionCommands.buildUpon().apply {
             PlaybackBridge.ALL_COMMANDS.forEach { add(it) }
         }.build()
