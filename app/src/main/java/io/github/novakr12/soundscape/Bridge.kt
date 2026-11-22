@@ -97,6 +97,13 @@ object Bridge {
     const val NATIVE_PAGE =
         "(() => { const p = window.soundscapePlayer; return Boolean(p && p.native === true); })()"
 
+    fun spectrum(bins: ByteArray): String =
+        bins.joinToString(
+            separator = ",",
+            prefix = "window.dispatchEvent(new CustomEvent(\"soundscape-spectrum-bins\", { detail: [",
+            postfix = "] })), undefined",
+        ) { (it.toInt() and 0xff).toString() }
+
     fun nativeReport(json: String) =
         "(() => { const r = window.soundscapeNativeReport; if (r) r(JSON.parse(${JSONObject.quote(json)})); })()"
 

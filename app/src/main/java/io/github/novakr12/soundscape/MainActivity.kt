@@ -81,6 +81,7 @@ class MainActivity : AppCompatActivity() {
     private var handingBack = false
     private var askingHandBack = false
     private var visible = false
+    private var spectrumWanted = false
     private var resumed = false
     private var webPaused = false
     private var webDestroyed = false
@@ -206,6 +207,7 @@ class MainActivity : AppCompatActivity() {
             web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
         }
         if (pageNative) requestTellPage()
+        watchSpectrum()
         main.removeCallbacks(tick)
         main.post(tick)
     }
@@ -251,6 +253,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         visible = false
+        watchSpectrum()
         handOverToPhone()
         waiveRendererIfIdle()
         super.onStop()
@@ -634,6 +637,7 @@ class MainActivity : AppCompatActivity() {
             }
             connectedController = built
             flushWaitingCommands(built)
+            watchSpectrum()
             pendingTakeOver?.let { queued ->
                 pendingTakeOver = null
                 if (!visible && !pageNative && !nativePlaying) {
@@ -665,6 +669,15 @@ class MainActivity : AppCompatActivity() {
         target.sendCustomCommand(command, args)
     }
 
+    private fun watchSpectrum() {
+        val active = connectedController?.takeIf { it.isConnected } ?: return
+        sendCommand(
+            active,
+            PlaybackBridge.CMD_WATCH_SPECTRUM,
+            Bundle().apply { putBoolean(PlaybackBridge.KEY_ON, visible && spectrumWanted) },
+        )
+    }
+
     private fun handleServiceEvent(command: SessionCommand, args: Bundle): ListenableFuture<SessionResult> {
         return when (command.customAction) {
             PlaybackBridge.ACTION_RUN_IN_PAGE -> {
@@ -679,6 +692,13 @@ class MainActivity : AppCompatActivity() {
                 val json = args.getString(PlaybackBridge.KEY_REPORT_JSON)
                 if (!json.isNullOrEmpty() && !isDestroyed && !webDestroyed && ::web.isInitialized && visible) {
                     web.evaluateJavascript(Bridge.nativeReport(json), null)
+                }
+                Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+            }
+            PlaybackBridge.ACTION_SPECTRUM -> {
+                val bins = args.getByteArray(PlaybackBridge.KEY_BINS)
+                if (bins != null && visible && !isDestroyed && !webDestroyed && ::web.isInitialized) {
+                    web.evaluateJavascript(Bridge.spectrum(bins), null)
                 }
                 Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
             }
@@ -704,7 +724,6 @@ class MainActivity : AppCompatActivity() {
                 if (nativePlaying) {
                     pagePlaying = false
                     if ((!resumed || !visible) && !isDestroyed && !webDestroyed && ::web.isInitialized) {
-                        // Drain prior queued evaluateJavascript calls (pause / hold) before pausing WebView timers.
                         web.evaluateJavascript("void 0") {
                             if (nativePlaying && !isDestroyed && !webDestroyed) {
                                 if (!resumed) pauseWebIfIdle()
@@ -867,6 +886,11 @@ class MainActivity : AppCompatActivity() {
         }
         if (item.optString("do") == "autoplay") {
             Settings(this).autoplay = item.optBoolean("on")
+            return
+        }
+        if (item.optString("do") == "visualizer") {
+            spectrumWanted = item.optBoolean("on")
+            watchSpectrum()
             return
         }
         Remote.command(item) ?: return

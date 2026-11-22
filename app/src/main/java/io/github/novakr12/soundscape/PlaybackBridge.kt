@@ -117,7 +117,6 @@ object PlaybackCodecs {
 object PlaybackBridge {
     const val HINT_PAGE_CLIENT = "soundscape.page_client"
 
-    // Commands sent from UI process to PlaybackService
     const val ACTION_SHOW_PAGE = "soundscape.cmd.show_page"
     const val ACTION_TAKE_OVER = "soundscape.cmd.take_over"
     const val ACTION_OBEY_PAGE = "soundscape.cmd.obey_page"
@@ -127,12 +126,13 @@ object PlaybackBridge {
     const val ACTION_HAND_BACK_START = "soundscape.cmd.hand_back_start"
     const val ACTION_HAND_BACK_ABANDON = "soundscape.cmd.hand_back_abandon"
     const val ACTION_HAND_BACK_FINISH = "soundscape.cmd.hand_back_finish"
+    const val ACTION_WATCH_SPECTRUM = "soundscape.cmd.watch_spectrum"
 
-    // Commands / events sent from PlaybackService to MainActivity
     const val ACTION_RUN_IN_PAGE = "soundscape.event.run_in_page"
     const val ACTION_REPORT_TO_PAGE = "soundscape.event.report_to_page"
     const val ACTION_READ_PAGE = "soundscape.event.read_page"
     const val ACTION_NATIVE_STATE = "soundscape.event.native_state"
+    const val ACTION_SPECTRUM = "soundscape.event.spectrum"
 
     const val KEY_STATE_JSON = "state_json"
     const val KEY_SERVER = "server"
@@ -144,6 +144,8 @@ object PlaybackBridge {
     const val KEY_INDEX = "index"
     const val KEY_HAND_BACK_JSON = "hand_back_json"
     const val KEY_SCRIPT = "script"
+    const val KEY_ON = "on"
+    const val KEY_BINS = "bins"
     const val KEY_PLAYING_NATIVELY = "playing_natively"
     const val KEY_PLAYING_FOR_PAGE = "playing_for_page"
 
@@ -156,6 +158,7 @@ object PlaybackBridge {
     val CMD_HAND_BACK_START = SessionCommand(ACTION_HAND_BACK_START, Bundle.EMPTY)
     val CMD_HAND_BACK_ABANDON = SessionCommand(ACTION_HAND_BACK_ABANDON, Bundle.EMPTY)
     val CMD_HAND_BACK_FINISH = SessionCommand(ACTION_HAND_BACK_FINISH, Bundle.EMPTY)
+    val CMD_WATCH_SPECTRUM = SessionCommand(ACTION_WATCH_SPECTRUM, Bundle.EMPTY)
 
     val ALL_COMMANDS: List<SessionCommand> = listOf(
         CMD_SHOW_PAGE,
@@ -167,10 +170,12 @@ object PlaybackBridge {
         CMD_HAND_BACK_START,
         CMD_HAND_BACK_ABANDON,
         CMD_HAND_BACK_FINISH,
+        CMD_WATCH_SPECTRUM,
     )
 
     val EVENT_RUN_IN_PAGE = SessionCommand(ACTION_RUN_IN_PAGE, Bundle.EMPTY)
     val EVENT_REPORT_TO_PAGE = SessionCommand(ACTION_REPORT_TO_PAGE, Bundle.EMPTY)
     val EVENT_READ_PAGE = SessionCommand(ACTION_READ_PAGE, Bundle.EMPTY)
+    val EVENT_SPECTRUM = SessionCommand(ACTION_SPECTRUM, Bundle.EMPTY)
     val EVENT_NATIVE_STATE = SessionCommand(ACTION_NATIVE_STATE, Bundle.EMPTY)
 }

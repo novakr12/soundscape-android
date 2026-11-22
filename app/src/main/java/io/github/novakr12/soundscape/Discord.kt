@@ -40,7 +40,6 @@ object Discord {
     const val LOGO = "https://raw.githubusercontent.com/novakr12/soundscape-desktop/main/icons/icon.png"
     const val UNKNOWN_ALBUM = "Unknown album"
 
-    // Discord on Android doesn't fill this in from the app id, so without it the status reads "Listening to Game".
     const val APP_NAME = "Soundscape"
 
     const val DRIFT_MS = 2_000L

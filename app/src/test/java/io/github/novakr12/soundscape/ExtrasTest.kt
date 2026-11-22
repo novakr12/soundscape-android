@@ -63,13 +63,13 @@ class ExtrasTest {
 
     @Test
     fun gatesPeriodicRecapAndStreakChecksBeforeNetwork() {
-        assertTrue(Extras.shouldCheckRecap(LocalDate.parse("2026-11-16"), null)) // Monday
-        assertFalse(Extras.shouldCheckRecap(LocalDate.parse("2026-11-16"), "2026-11-09")) // Mon with last week's recap already shown
-        assertTrue(Extras.shouldCheckRecap(LocalDate.parse("2026-11-16"), "2026-11-02")) // Mon two weeks after
-        assertFalse(Extras.shouldCheckRecap(LocalDate.parse("2026-11-19"), null)) // Thursday skipped
-        assertFalse(Extras.shouldCheckRecap(LocalDate.parse("2026-11-20"), null)) // Friday skipped
-        assertFalse(Extras.shouldCheckRecap(LocalDate.parse("2026-11-21"), null)) // Saturday skipped
-        assertTrue(Extras.shouldCheckRecap(LocalDate.parse("2026-11-15"), "2026-11-02")) // Sunday UTC boundary check
+        assertTrue(Extras.shouldCheckRecap(LocalDate.parse("2026-11-16"), null))
+        assertFalse(Extras.shouldCheckRecap(LocalDate.parse("2026-11-16"), "2026-11-09"))
+        assertTrue(Extras.shouldCheckRecap(LocalDate.parse("2026-11-16"), "2026-11-02"))
+        assertFalse(Extras.shouldCheckRecap(LocalDate.parse("2026-11-19"), null))
+        assertFalse(Extras.shouldCheckRecap(LocalDate.parse("2026-11-20"), null))
+        assertFalse(Extras.shouldCheckRecap(LocalDate.parse("2026-11-21"), null))
+        assertTrue(Extras.shouldCheckRecap(LocalDate.parse("2026-11-15"), "2026-11-02"))
         assertFalse(Extras.shouldCheckStreak(20, "2026-11-17", null))
         assertTrue(Extras.shouldCheckStreak(21, "2026-11-17", null))
         assertFalse(Extras.shouldCheckStreak(21, "2026-11-17", "2026-11-17"))

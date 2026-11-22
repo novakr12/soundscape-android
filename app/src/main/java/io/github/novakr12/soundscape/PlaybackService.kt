@@ -53,6 +53,28 @@ class PlaybackService : MediaLibraryService() {
     private val main = Handler(Looper.getMainLooper())
     private val reporter = Pools.serial("soundscape-report")
     private var discord: DiscordLink? = null
+    private val spectrum = Spectrum()
+    private var spectrumSent: ByteArray? = null
+    private val showSpectrum = object : Runnable {
+        override fun run() {
+            if (!spectrum.on) return
+            val target = pageController()
+            if (target == null) {
+                spectrum.on = false
+                return
+            }
+            val bins = spectrum.latest.takeIf { native?.player?.isPlaying == true }
+            if (bins != null && bins !== spectrumSent) {
+                spectrumSent = bins
+                session.sendCustomCommand(
+                    target,
+                    PlaybackBridge.EVENT_SPECTRUM,
+                    Bundle().apply { putByteArray(PlaybackBridge.KEY_BINS, bins) },
+                )
+            }
+            main.postDelayed(this, SPECTRUM_TICK_MS)
+        }
+    }
 
     @Volatile
     private var native: Native? = null
@@ -168,6 +190,10 @@ class PlaybackService : MediaLibraryService() {
                 finishHandBack()
                 SessionResult(SessionResult.RESULT_SUCCESS)
             }
+            PlaybackBridge.ACTION_WATCH_SPECTRUM -> {
+                watchSpectrum(args.getBoolean(PlaybackBridge.KEY_ON))
+                SessionResult(SessionResult.RESULT_SUCCESS)
+            }
             else -> return null
         }
         return Futures.immediateFuture(result)
@@ -199,6 +225,13 @@ class PlaybackService : MediaLibraryService() {
             PlaybackBridge.EVENT_REPORT_TO_PAGE,
             Bundle().apply { putString(PlaybackBridge.KEY_REPORT_JSON, json) },
         )
+    }
+
+    private fun watchSpectrum(on: Boolean) {
+        main.removeCallbacks(showSpectrum)
+        spectrum.on = on && !destroyed
+        spectrumSent = null
+        if (spectrum.on) main.post(showSpectrum)
     }
 
     private fun sendNativeState() {
@@ -372,7 +405,7 @@ class PlaybackService : MediaLibraryService() {
                     true,
                     eventHandler,
                     audioListener,
-                    DefaultAudioSink.Builder(this).build(),
+                    SpectrumSink(DefaultAudioSink.Builder(this).build(), spectrum),
                 ),
             )
         }
@@ -450,6 +483,7 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onDestroy() {
         destroyed = true
+        spectrum.on = false
         main.removeCallbacksAndMessages(null)
         val running = native
         native = null
@@ -1024,6 +1058,7 @@ class PlaybackService : MediaLibraryService() {
 
     private companion object {
         const val TICK_MS = 1000L
+        const val SPECTRUM_TICK_MS = 45L
         const val TAKE_OVER_WITHIN_MS = 12_000L
         const val SYNC_WITHIN_MS = 6_000L
         const val SYNC_STEP_MS = 50L

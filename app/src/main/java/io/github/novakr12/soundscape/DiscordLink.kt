@@ -36,7 +36,6 @@ class DiscordLink(context: Context) {
     private var resetBackoff = false
     private var stopped = false
 
-    // Accessed only on the worker thread.
     private var session: RpcSession? = null
     private var shown: DiscordShown? = null
     private var nonce = 0L

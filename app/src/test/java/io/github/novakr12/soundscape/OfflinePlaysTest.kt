@@ -40,9 +40,7 @@ class OfflinePlaysTest {
         val added = OfflinePlay("Band", "Three", null, 1_700_000_600)
         assertEquals(listOf(added), OfflinePlays.withoutSent(plays + added, plays))
         assertEquals(emptyList<OfflinePlay>(), OfflinePlays.withoutSent(plays, plays))
-        // Leading play evicted during send; only remaining overlapping sent item is dropped
         assertEquals(listOf(added), OfflinePlays.withoutSent(listOf(plays[1], added), plays))
-        // Unrelated queue is left untouched
         assertEquals(listOf(added), OfflinePlays.withoutSent(listOf(added), plays))
     }
 }
