@@ -90,11 +90,44 @@ class DiscordTest {
             "https://i.scdn.co/image/abc",
             Discord.publicArt("https://i.scdn.co/image/abc", "music.example"),
         )
+        assertEquals(
+            "https://is1-ssl.mzstatic.com/image/thumb/Music/cover.jpg/600x600bb.jpg",
+            Discord.publicArt(
+                "https://is1-ssl.mzstatic.com/image/thumb/Music/cover.jpg/600x600bb.jpg",
+                "box.tail1234.ts.net",
+            ),
+        )
         assertNull(Discord.publicArt("https://music.example/api/navidrome/cover/1", "music.example"))
         assertNull(Discord.publicArt("file:///home/me/cover.jpg", "music.example"))
         assertNull(Discord.publicArt("http://cdn.example/a.jpg", null))
         assertNull(Discord.publicArt("/api/cover/1", "music.example"))
         assertNull(Discord.publicArt(null, null))
+
+        for (privateHost in listOf(
+            "box.tail1234.ts.net",
+            "100.64.0.1",
+            "100.127.255.254",
+            "192.168.1.5",
+            "10.0.0.1",
+            "172.16.0.1",
+            "localhost",
+            "nas.local",
+            "nas",
+            "[::1]",
+            "[fd7a:115c:a1e0::1]",
+            "[::ffff:100.64.0.1]",
+        )) {
+            assertTrue("$privateHost should be private", Discord.isPrivateHost(privateHost))
+            val url = "https://$privateHost/api/cover/1"
+            assertNull(Discord.publicArt(url, "music.example"))
+            assertNull(Discord.usableCoverLink(url))
+        }
+        assertFalse(Discord.isPrivateHost("100.63.255.254"))
+        assertFalse(Discord.isPrivateHost("100.128.0.1"))
+        assertEquals(
+            "https://music.example/api/cover/1",
+            Discord.usableCoverLink("https://music.example/api/cover/1"),
+        )
     }
 
     @Test
@@ -135,6 +168,76 @@ class DiscordTest {
             null to "Discovery",
             Discord.parseCoverLink("""{"url":"http://insecure.example/a.jpg","album":"Discovery"}"""),
         )
+        for (privateHost in listOf(
+            "box.tail1234.ts.net",
+            "100.64.0.1",
+            "100.127.255.254",
+            "192.168.1.5",
+            "10.0.0.1",
+            "172.16.0.1",
+            "localhost",
+            "nas.local",
+            "nas",
+            "[::1]",
+            "[fd7a:115c:a1e0::1]",
+            "[::ffff:100.64.0.1]",
+        )) {
+            assertEquals(
+                null to "Dopesmoker",
+                Discord.parseCoverLink("""{"url":"https://$privateHost/api/cover/1","album":"Dopesmoker"}"""),
+            )
+        }
+        assertEquals(
+            "https://is1-ssl.mzstatic.com/image/thumb/Music/cover.jpg/600x600bb.jpg" to "Dopesmoker",
+            Discord.parseCoverLink(
+                """{"url":"https://is1-ssl.mzstatic.com/image/thumb/Music/cover.jpg/600x600bb.jpg","album":"Dopesmoker"}""",
+            ),
+        )
         assertEquals(null to null, Discord.parseCoverLink("""{"url":null,"album":null}"""))
+    }
+
+    @Test
+    fun retriesMissingCoversAndKeepsKnownAlbum() {
+        val miss = Discord.cacheLookup(
+            art = null,
+            pageAlbum = null,
+            remote = null to "Dopesmoker",
+            previousAlbum = null,
+            lookupSucceeded = true,
+            nowMs = 1_000L,
+            retryAfterMs = 60_000L,
+        )
+        assertEquals(Discord.LOGO, miss.looked.image)
+        assertEquals("Dopesmoker", miss.looked.album)
+        assertEquals(61_000L, miss.retryAt)
+
+        val transientFailure = Discord.cacheLookup(
+            art = null,
+            pageAlbum = null,
+            remote = null,
+            previousAlbum = miss.looked.album,
+            lookupSucceeded = false,
+            nowMs = 62_000L,
+            retryAfterMs = 60_000L,
+        )
+        assertEquals(Discord.LOGO, transientFailure.looked.image)
+        assertEquals("Dopesmoker", transientFailure.looked.album)
+        assertEquals(122_000L, transientFailure.retryAt)
+
+        val resolved = Discord.cacheLookup(
+            art = null,
+            pageAlbum = null,
+            remote = "https://is1-ssl.mzstatic.com/image/thumb/Music/cover.jpg/600x600bb.jpg" to "Dopesmoker",
+            previousAlbum = transientFailure.looked.album,
+            lookupSucceeded = true,
+            nowMs = 123_000L,
+            retryAfterMs = 60_000L,
+        )
+        assertEquals(
+            "https://is1-ssl.mzstatic.com/image/thumb/Music/cover.jpg/600x600bb.jpg",
+            resolved.looked.image,
+        )
+        assertEquals("Dopesmoker", resolved.looked.album)
+        assertNull(resolved.retryAt)
     }
 }

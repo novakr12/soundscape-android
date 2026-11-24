@@ -23,8 +23,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 class DiscordLink(context: Context) {
-    private data class CachedLooked(val looked: DiscordLooked, val retryAt: Long?)
-
     private val app = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private val worker = Pools.serial("soundscape-discord")
@@ -40,7 +38,7 @@ class DiscordLink(context: Context) {
     private var shown: DiscordShown? = null
     private var nonce = 0L
     private var nextRetryAt = 0L
-    private val known = HashMap<DiscordSong, CachedLooked>()
+    private val known = HashMap<DiscordSong, CachedLookup>()
     private val idleDisconnect = Runnable {
         synchronized(lock) {
             if (stopped || desired != null) return@Runnable
@@ -194,36 +192,36 @@ class DiscordLink(context: Context) {
     private fun lookUp(source: DiscordSource): DiscordLooked {
         val song = source.playing.song
         val now = SystemClock.elapsedRealtime()
+        var previousAlbum: String? = null
         known[song]?.let { entry ->
             if (entry.retryAt == null || now < entry.retryAt) return entry.looked
+            previousAlbum = entry.looked.album
         }
         val server = source.server?.takeIf { it != CarLibrary.OFFLINE }
         val art = Discord.publicArt(source.playing.art, Discord.serverHost(server))
         val pageAlbum = Discord.realAlbum(song.album)
         val needsLookup = art == null || pageAlbum == null
-        var remoteUrl: String? = null
-        var remoteAlbum: String? = null
-        var retryAt: Long? = null
-        if (needsLookup) {
-            if (server != null && !source.token.isNullOrEmpty()) {
-                val result = fetchCoverLink(server, source.token, song)
-                if (result != null) {
-                    remoteUrl = result.first
-                    remoteAlbum = result.second
-                } else {
-                    retryAt = now + COVER_RETRY_MS
-                }
-            } else {
-                retryAt = now + COVER_RETRY_MS
+        var lookupOk = !needsLookup
+        var remote: Pair<String?, String?>? = null
+        if (needsLookup && server != null && !source.token.isNullOrEmpty()) {
+            val result = fetchCoverLink(server, source.token, song)
+            if (result != null) {
+                remote = result
+                lookupOk = true
             }
         }
-        val looked = DiscordLooked(
-            image = art ?: remoteUrl ?: Discord.LOGO,
-            album = pageAlbum ?: remoteAlbum,
+        val cached = Discord.cacheLookup(
+            art = art,
+            pageAlbum = pageAlbum,
+            remote = remote,
+            previousAlbum = previousAlbum,
+            lookupSucceeded = lookupOk,
+            nowMs = now,
+            retryAfterMs = COVER_RETRY_MS,
         )
         if (known.size > MOST_KNOWN) known.clear()
-        known[song] = CachedLooked(looked, retryAt)
-        return looked
+        known[song] = cached
+        return cached.looked
     }
 
     private fun fetchCoverLink(server: String, token: String, song: DiscordSong): Pair<String?, String?>? =

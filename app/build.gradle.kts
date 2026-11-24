@@ -12,8 +12,8 @@ android {
         applicationId = "io.github.novakr12.soundscape"
         minSdk = 26
         targetSdk = 36
-        versionCode = 26
-        versionName = "0.11.4"
+        versionCode = 27
+        versionName = "0.11.5"
     }
 
     signingConfigs {
