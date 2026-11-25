@@ -247,6 +247,8 @@ class PlayerActivity : AppCompatActivity() {
             settingsShown = null
             downloadsShown = null
             if (immersiveFullscreen) setFullscreen(false)
+            spectrumWanted = false
+            watchSpectrum()
             AppBridgeProvider.stopNative(this)
             AppBridgeProvider.clearSavedQueue(this)
             AppBridgeProvider.clearLibrary(this)
@@ -602,6 +604,8 @@ class PlayerActivity : AppCompatActivity() {
         handingBack = false
         askingHandBack = false
         if (immersiveFullscreen) setFullscreen(false)
+        spectrumWanted = false
+        watchSpectrum()
         AppBridgeProvider.stopNative(this)
         AppBridgeProvider.clearSavedQueue(this)
         AppBridgeProvider.clearLibrary(this)

@@ -98,7 +98,7 @@ object Bridge {
         "(() => { const p = window.soundscapePlayer; return Boolean(p && p.native === true); })()"
 
     const val CLOSE_THEATER =
-        "(() => { const b = document.querySelector('.theater [aria-label=\"Close now playing view\"]'); if (!b) return false; b.click(); return true; })()"
+        "(() => { const b = document.querySelector('.theater:not([hidden]) [aria-label=\"Close now playing view\"]'); if (!b) return false; b.click(); return true; })()"
 
     fun volumeGain(volume: Double): Double {
         if (!volume.isFinite()) return 0.0

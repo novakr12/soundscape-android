@@ -219,6 +219,12 @@ class BridgeTest {
         assertTrue(Bridge.fullscreenState(false).contains("detail: false"))
     }
 
+    @Test
+    fun closesTheaterOnlyWhenVisible() {
+        assertTrue(Bridge.CLOSE_THEATER.contains(".theater:not([hidden]) [aria-label=\"Close now playing view\"]"))
+        assertFalse(Bridge.CLOSE_THEATER.contains(".theater ["))
+    }
+
     private fun parseQuotedJson(script: String): org.json.JSONObject {
         val quoted = script.substringAfter("JSON.parse(").substringBefore("))")
         return org.json.JSONObject(org.json.JSONObject("{\"v\":$quoted}").getString("v"))
