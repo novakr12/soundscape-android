@@ -70,6 +70,7 @@ object Net {
         connectTimeoutMs: Int = 10_000,
         readTimeoutMs: Int = 15_000,
         readResponse: Boolean = true,
+        readError: Boolean = false,
         maxBytes: Int = DEFAULT_MAX_BYTES,
     ): HttpAnswer {
         val connection = open(
@@ -91,6 +92,8 @@ object Net {
                     drainQuietly(connection.inputStream)
                     null
                 }
+            } else if (readError) {
+                connection.errorStream?.let { readTextBounded(it, maxBytes) }
             } else {
                 drainQuietly(connection.errorStream)
                 null

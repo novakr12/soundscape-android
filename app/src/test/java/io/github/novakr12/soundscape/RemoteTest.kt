@@ -64,23 +64,51 @@ class RemoteTest {
         assertEquals(RemoteCommand.Jump(2), Remote.command(JSONObject("""{"do":"jump","ahead":2}""")))
         assertNull(Remote.command(JSONObject("""{"do":"jump","ahead":0}""")))
         assertNull(Remote.command(JSONObject("""{"do":"jump","ahead":11}""")))
+        assertNull(Remote.command(JSONObject("""{"do":"jump","ahead":2.5}""")))
+
+        assertEquals(RemoteCommand.Remove(3), Remote.command(JSONObject("""{"do":"remove","ahead":3}""")))
+        assertNull(Remote.command(JSONObject("""{"do":"remove","ahead":0}""")))
+        assertNull(Remote.command(JSONObject("""{"do":"remove","ahead":11}""")))
+
+        assertEquals(RemoteCommand.Move(2, 5), Remote.command(JSONObject("""{"do":"move","from":2,"to":5}""")))
+        assertNull(Remote.command(JSONObject("""{"do":"move","from":2,"to":2}""")))
+        assertNull(Remote.command(JSONObject("""{"do":"move","from":0,"to":2}""")))
+        assertNull(Remote.command(JSONObject("""{"do":"move","from":1,"to":11}""")))
+
+        assertEquals(RemoteCommand.Sleep(SleepMode.Off), Remote.command(JSONObject("""{"do":"sleep","kind":"off"}""")))
+        assertEquals(RemoteCommand.Sleep(SleepMode.AfterSong), Remote.command(JSONObject("""{"do":"sleep","kind":"song"}""")))
+        assertEquals(RemoteCommand.Sleep(SleepMode.Seconds(120.0)), Remote.command(JSONObject("""{"do":"sleep","kind":"time","seconds":120}""")))
+        assertNull(Remote.command(JSONObject("""{"do":"sleep","kind":"time","seconds":0.5}""")))
+        assertNull(Remote.command(JSONObject("""{"do":"sleep","kind":"time","seconds":90000}""")))
+        assertNull(Remote.command(JSONObject("""{"do":"sleep","kind":"unknown"}""")))
     }
 
     @Test
     fun reportsWhatPlaysNext() {
         val upNext = (1..12).map { song.copy(trackId = "n$it", title = "Next $it") }
         val state = JSONObject(
-            Remote.report("phone000001", "x", RemoteSnapshot(song, true, 1.0, 200.0, 0.5, "all", upNext, shuffle = true)),
+            Remote.report(
+                "phone000001",
+                "x",
+                RemoteSnapshot(song, true, 1.0, 200.0, 0.5, "all", upNext, shuffle = true, sleep = SleepSnapshot.Remaining(45.5)),
+            ),
         )
             .getJSONObject("state")
         assertEquals("all", state.getString("repeat"))
         assertTrue(state.getBoolean("shuffle"))
+        assertEquals("time", state.getJSONObject("sleep").getString("kind"))
+        assertEquals(45.5, state.getJSONObject("sleep").getDouble("left"), 0.0)
         assertEquals(10, state.getJSONArray("upNext").length())
         assertEquals("Next 1", state.getJSONArray("upNext").getJSONObject(0).getString("title"))
         assertFalse(state.getJSONArray("upNext").getJSONObject(0).has("cover"))
+        val afterSong = JSONObject(
+            Remote.report("phone000001", "x", RemoteSnapshot(song, true, 1.0, 200.0, 0.5, sleep = SleepSnapshot.AfterSong)),
+        ).getJSONObject("state")
+        assertEquals("song", afterSong.getJSONObject("sleep").getString("kind"))
         val plain = JSONObject(Remote.report("phone000001", "x", RemoteSnapshot(song, true, 1.0, 200.0, 0.5))).getJSONObject("state")
         assertTrue(plain.isNull("repeat"))
         assertTrue(plain.isNull("shuffle"))
+        assertTrue(plain.isNull("sleep"))
         assertEquals(0, plain.getJSONArray("upNext").length())
     }
 
@@ -147,6 +175,12 @@ class RemoteTest {
         assertTrue(script.startsWith("window.soundscapeDeviceId = \"$id\";"))
         assertTrue(script.contains("\\\"Test\\\""))
         assertTrue(script.contains("window.soundscapeBridgeRemote = true;"))
+        assertFalse(script.contains("window.soundscapeNativeEq = true;"))
+        val fullScript = Remote.pageScript(id, "Soundscape on Pixel 8", nativeReady = true)
+        assertTrue(fullScript.contains("window.soundscapeNativeQueueSave = true;"))
+        assertTrue(fullScript.contains("window.soundscapeNativeFullscreen = true;"))
+        assertTrue(fullScript.contains("window.soundscapeNativeEq = true;"))
+        assertTrue(fullScript.contains("soundscape:player-options"))
         assertTrue(Remote.holdScript(false).contains("soundscape-device-report"))
         assertEquals("https://music.example.com:8443", Server.origin("https://Music.Example.com:8443/soundscape"))
         assertEquals("http://192.168.1.5", Server.origin("http://192.168.1.5"))

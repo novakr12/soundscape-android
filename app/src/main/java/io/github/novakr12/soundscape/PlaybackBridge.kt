@@ -127,6 +127,7 @@ object PlaybackBridge {
     const val ACTION_HAND_BACK_ABANDON = "soundscape.cmd.hand_back_abandon"
     const val ACTION_HAND_BACK_FINISH = "soundscape.cmd.hand_back_finish"
     const val ACTION_WATCH_SPECTRUM = "soundscape.cmd.watch_spectrum"
+    const val ACTION_SAVE_QUEUE = "soundscape.cmd.save_queue"
 
     const val ACTION_RUN_IN_PAGE = "soundscape.event.run_in_page"
     const val ACTION_REPORT_TO_PAGE = "soundscape.event.report_to_page"
@@ -148,6 +149,8 @@ object PlaybackBridge {
     const val KEY_BINS = "bins"
     const val KEY_PLAYING_NATIVELY = "playing_natively"
     const val KEY_PLAYING_FOR_PAGE = "playing_for_page"
+    const val KEY_REQUEST_ID = "request_id"
+    const val KEY_NAME = "name"
 
     val CMD_SHOW_PAGE = SessionCommand(ACTION_SHOW_PAGE, Bundle.EMPTY)
     val CMD_TAKE_OVER = SessionCommand(ACTION_TAKE_OVER, Bundle.EMPTY)
@@ -159,6 +162,7 @@ object PlaybackBridge {
     val CMD_HAND_BACK_ABANDON = SessionCommand(ACTION_HAND_BACK_ABANDON, Bundle.EMPTY)
     val CMD_HAND_BACK_FINISH = SessionCommand(ACTION_HAND_BACK_FINISH, Bundle.EMPTY)
     val CMD_WATCH_SPECTRUM = SessionCommand(ACTION_WATCH_SPECTRUM, Bundle.EMPTY)
+    val CMD_SAVE_QUEUE = SessionCommand(ACTION_SAVE_QUEUE, Bundle.EMPTY)
 
     val ALL_COMMANDS: List<SessionCommand> = listOf(
         CMD_SHOW_PAGE,
@@ -171,6 +175,7 @@ object PlaybackBridge {
         CMD_HAND_BACK_ABANDON,
         CMD_HAND_BACK_FINISH,
         CMD_WATCH_SPECTRUM,
+        CMD_SAVE_QUEUE,
     )
 
     val EVENT_RUN_IN_PAGE = SessionCommand(ACTION_RUN_IN_PAGE, Bundle.EMPTY)

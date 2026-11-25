@@ -97,6 +97,15 @@ object Bridge {
     const val NATIVE_PAGE =
         "(() => { const p = window.soundscapePlayer; return Boolean(p && p.native === true); })()"
 
+    const val CLOSE_THEATER =
+        "(() => { const b = document.querySelector('.theater [aria-label=\"Close now playing view\"]'); if (!b) return false; b.click(); return true; })()"
+
+    fun volumeGain(volume: Double): Double {
+        if (!volume.isFinite()) return 0.0
+        val clamped = volume.coerceIn(0.0, 1.0)
+        return clamped * clamped * clamped
+    }
+
     fun spectrum(bins: ByteArray): String =
         bins.joinToString(
             separator = ",",
@@ -106,6 +115,12 @@ object Bridge {
 
     fun nativeReport(json: String) =
         "(() => { const r = window.soundscapeNativeReport; if (r) r(JSON.parse(${JSONObject.quote(json)})); })()"
+
+    fun queueSaved(json: String) =
+        "window.dispatchEvent(new CustomEvent(\"soundscape-queue-saved\", { detail: JSON.parse(${JSONObject.quote(json)}) })), undefined"
+
+    fun fullscreenState(on: Boolean) =
+        "window.dispatchEvent(new CustomEvent(\"soundscape-fullscreen\", { detail: $on })), undefined"
 
     fun originRule(server: String): String? = Server.origin(server)
 

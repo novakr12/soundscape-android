@@ -19,6 +19,9 @@ sealed class RemoteCommand {
     data class Repeat(val mode: String) : RemoteCommand()
     data class Shuffle(val on: Boolean) : RemoteCommand()
     data class Jump(val ahead: Int) : RemoteCommand()
+    data class Remove(val ahead: Int) : RemoteCommand()
+    data class Move(val from: Int, val to: Int) : RemoteCommand()
+    data class Sleep(val mode: SleepMode) : RemoteCommand()
 }
 
 data class RemoteSnapshot(
@@ -30,6 +33,7 @@ data class RemoteSnapshot(
     val repeat: String? = null,
     val upNext: List<BridgeTrack> = emptyList(),
     val shuffle: Boolean? = null,
+    val sleep: SleepSnapshot? = null,
 )
 
 class EventReader {
@@ -77,8 +81,9 @@ object Remote {
     const val KIND = "android"
     const val HEARTBEAT_MS = 30_000L
     const val RESTART_AFTER_SECONDS = 3.0
-    private const val MOST_TRACKS = 500
+    const val MOST_TRACKS = 500
     const val MOST_UP_NEXT = 10
+    const val MAX_SLEEP_SECONDS = 86_400.0
     private val REPEAT_MODES = setOf("off", "all", "one")
     private const val LETTERS = "abcdefghijklmnopqrstuvwxyz0123456789"
     private val DEVICE_ID = Regex("^[A-Za-z0-9_-]{8,64}$")
@@ -92,13 +97,42 @@ object Remote {
         return if (plain.isEmpty()) "Soundscape on Android" else "Soundscape on $plain"
     }
 
-    fun pageScript(id: String, name: String) =
-        "window.soundscapeDeviceId = ${JSONObject.quote(id)}; window.soundscapeDeviceName = ${JSONObject.quote(name)}; window.soundscapeBridgeRemote = true;"
+    fun pageScript(id: String, name: String, nativeReady: Boolean = false): String {
+        val base = "window.soundscapeDeviceId = ${JSONObject.quote(id)}; " +
+            "window.soundscapeDeviceName = ${JSONObject.quote(name)}; " +
+            "window.soundscapeBridgeRemote = true;"
+        if (!nativeReady) return base
+        return base +
+            "window.soundscapeNativeQueueSave = true;" +
+            "window.soundscapeNativeFullscreen = true;" +
+            "window.soundscapeNativeEq = true;" +
+            "(() => {" +
+            "const sendEq = () => {" +
+            "try {" +
+            "const raw = localStorage.getItem(\"soundscape:player-options\");" +
+            "if (!raw) return;" +
+            "const eq = JSON.parse(raw)?.equalizer;" +
+            "if (!eq || typeof eq !== \"object\") return;" +
+            "window.soundscapeNative?.postMessage?.(JSON.stringify({" +
+            "do: \"equalizer\", enabled: eq.enabled === true, bands: Array.isArray(eq.bands) ? eq.bands : []" +
+            "}));" +
+            "} catch {}" +
+            "};" +
+            "window.addEventListener(\"soundscape:player-options\", sendEq);" +
+            "if (document.readyState === \"loading\") { window.addEventListener(\"DOMContentLoaded\", sendEq, { once: true }); } else { sendEq(); }" +
+            "})();"
+    }
 
     fun holdScript(held: Boolean) = if (held) {
         "(() => { window.soundscapeDeviceHeld = true; })()"
     } else {
         "(() => { window.soundscapeDeviceHeld = false; window.dispatchEvent(new Event(\"soundscape-device-report\")); })()"
+    }
+
+    private fun sleepJson(sleep: SleepSnapshot?): Any = when (sleep) {
+        SleepSnapshot.AfterSong -> JSONObject().put("kind", "song")
+        is SleepSnapshot.Remaining -> JSONObject().put("kind", "time").put("left", sleep.left.coerceAtLeast(0.0))
+        null -> JSONObject.NULL
     }
 
     fun report(id: String, name: String, snapshot: RemoteSnapshot): String {
@@ -110,6 +144,7 @@ object Remote {
             .put("blocked", false)
             .put("repeat", snapshot.repeat?.takeIf { it in REPEAT_MODES } ?: JSONObject.NULL)
             .put("shuffle", snapshot.shuffle ?: JSONObject.NULL)
+            .put("sleep", sleepJson(snapshot.sleep))
             .put(
                 "upNext",
                 JSONArray().apply {
@@ -178,12 +213,39 @@ object Remote {
                 "false" -> RemoteCommand.Shuffle(false)
                 else -> null
             }
-            "jump" -> item.optInt("ahead", 0).takeIf { it in 1..MOST_UP_NEXT }?.let { RemoteCommand.Jump(it) }
+            "jump" -> positiveInt(item, "ahead", MOST_UP_NEXT)?.let { RemoteCommand.Jump(it) }
+            "remove" -> positiveInt(item, "ahead", MOST_UP_NEXT)?.let { RemoteCommand.Remove(it) }
+            "move" -> {
+                val from = positiveInt(item, "from", MOST_UP_NEXT) ?: return null
+                val to = positiveInt(item, "to", MOST_UP_NEXT) ?: return null
+                if (from != to) RemoteCommand.Move(from, to) else null
+            }
+            "sleep" -> when (item.optString("kind")) {
+                "off" -> RemoteCommand.Sleep(SleepMode.Off)
+                "song" -> RemoteCommand.Sleep(SleepMode.AfterSong)
+                "time" -> {
+                    val seconds = (item.opt("seconds") as? Number)?.toDouble()
+                    if (seconds != null && seconds.isFinite() && seconds >= 1.0 && seconds <= MAX_SLEEP_SECONDS) {
+                        RemoteCommand.Sleep(SleepMode.Seconds(seconds))
+                    } else {
+                        null
+                    }
+                }
+                else -> null
+            }
             "enqueue" -> item.optJSONObject("track")?.let(::track)?.let {
                 RemoteCommand.Enqueue(it, item.optBoolean("next", false))
             }
             else -> null
         }
+    }
+
+    private fun positiveInt(item: JSONObject, key: String, max: Int): Int? {
+        val raw = item.opt(key) as? Number ?: return null
+        val doubleVal = raw.toDouble()
+        if (!doubleVal.isFinite() || doubleVal % 1.0 != 0.0) return null
+        val value = raw.toLong()
+        return if (value in 1L..max.toLong()) value.toInt() else null
     }
 
     private fun take(item: JSONObject): RemoteCommand? {

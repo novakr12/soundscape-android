@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.os.Bundle
 import androidx.core.content.edit
+import kotlin.math.roundToLong
 
 class Settings(context: Context) {
     private val app = context.applicationContext
@@ -29,6 +30,17 @@ class Settings(context: Context) {
     var shuffle: Boolean
         get() = getBoolean(SHUFFLE, false)
         set(value) = putBoolean(SHUFFLE, value)
+
+    var volume: Double?
+        get() = getNullableLong(VOLUME)?.let { it.coerceIn(0L, 100L) / 100.0 }
+        set(value) = putNullableLong(
+            VOLUME,
+            value?.takeIf { it.isFinite() }?.let { (it.coerceIn(0.0, 1.0) * 100.0).roundToLong() },
+        )
+
+    var equalizer: EqualizerState
+        get() = Equalizer.decode(getString(EQUALIZER)) ?: Equalizer.DEFAULT
+        set(value) = putString(EQUALIZER, Equalizer.encode(value))
 
     var backgroundPlayback: Boolean
         get() = getBoolean(BACKGROUND, true)
@@ -237,6 +249,8 @@ class Settings(context: Context) {
         const val BACKGROUND = "background_playback"
         const val AUTOPLAY = "autoplay"
         const val SHUFFLE = "shuffle"
+        const val VOLUME = "volume"
+        const val EQUALIZER = "equalizer"
         const val WIFI_ONLY = "downloads_wifi_only"
         const val DEVICE_ID = "device_id"
         const val WEEKLY_RECAP = "weekly_recap"

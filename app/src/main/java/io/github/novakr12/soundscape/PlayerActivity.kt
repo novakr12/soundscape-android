@@ -37,7 +37,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.updatePadding
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
@@ -70,6 +72,7 @@ class PlayerActivity : AppCompatActivity() {
     private var pageNative = false
     private var listening: String? = null
     private val waitingForService = mutableListOf<String>()
+    private val waitingSaveQueue = mutableListOf<Pair<String, String>>()
     private var picking: ValueCallback<Array<Uri>>? = null
     private val main = Handler(Looper.getMainLooper())
     private var controller: ListenableFuture<MediaController>? = null
@@ -88,6 +91,7 @@ class PlayerActivity : AppCompatActivity() {
     private var renderGonePending = false
     private var pagePlaying = false
     private var currentPageUrl: String? = null
+    private var immersiveFullscreen = false
     private var settingsShown: Pair<String, String>? = null
     private var downloadsShown: Pair<String, String>? = null
     private var deviceScript: ScriptHandler? = null
@@ -134,10 +138,13 @@ class PlayerActivity : AppCompatActivity() {
         trouble = findViewById(R.id.trouble)
         val root = findViewById<View>(R.id.main_root)
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
-            val bars = insets.getInsets(
+            val mask = if (immersiveFullscreen) {
+                WindowInsetsCompat.Type.ime() or WindowInsetsCompat.Type.displayCutout()
+            } else {
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime() or
-                    WindowInsetsCompat.Type.displayCutout(),
-            )
+                    WindowInsetsCompat.Type.displayCutout()
+            }
+            val bars = insets.getInsets(mask)
             view.updatePadding(top = bars.top, bottom = bars.bottom, left = bars.left, right = bars.right)
             WindowInsetsCompat.CONSUMED
         }
@@ -157,10 +164,14 @@ class PlayerActivity : AppCompatActivity() {
         }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (!webDestroyed && ::web.isInitialized && web.canGoBack()) {
-                    web.goBack()
+                if (!webDestroyed && ::web.isInitialized) {
+                    web.evaluateJavascript(Bridge.CLOSE_THEATER) { closed ->
+                        if (isDestroyed) return@evaluateJavascript
+                        if (closed == "true") return@evaluateJavascript
+                        fallbackBack()
+                    }
                 } else {
-                    moveTaskToBack(true)
+                    fallbackBack()
                 }
             }
         })
@@ -226,6 +237,7 @@ class PlayerActivity : AppCompatActivity() {
         if (now != null && now != server) {
             server = now
             waitingForService.clear()
+            waitingSaveQueue.clear()
             pendingTellPage = false
             pendingTakeOver = null
             nativePlaying = false
@@ -234,7 +246,9 @@ class PlayerActivity : AppCompatActivity() {
             askingHandBack = false
             settingsShown = null
             downloadsShown = null
+            if (immersiveFullscreen) setFullscreen(false)
             AppBridgeProvider.stopNative(this)
+            AppBridgeProvider.clearSavedQueue(this)
             AppBridgeProvider.clearLibrary(this)
             nameThisDevice()
             listenToPage()
@@ -580,16 +594,22 @@ class PlayerActivity : AppCompatActivity() {
         settings.forgetConnection()
         settings.askedToConnect = true
         waitingForService.clear()
+        waitingSaveQueue.clear()
         pendingTellPage = false
         pendingTakeOver = null
         nativePlaying = false
         nativeForPage = false
         handingBack = false
         askingHandBack = false
+        if (immersiveFullscreen) setFullscreen(false)
         AppBridgeProvider.stopNative(this)
+        AppBridgeProvider.clearSavedQueue(this)
         AppBridgeProvider.clearLibrary(this)
         AppBridgeProvider.refreshDiscord(this)
-        if (!webDestroyed && ::web.isInitialized) listenToPage()
+        if (!webDestroyed && ::web.isInitialized) {
+            nameThisDevice()
+            listenToPage()
+        }
     }
 
     private fun startNotifications() {
@@ -653,15 +673,67 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun flushWaitingCommands(target: MediaController) {
-        if (waitingForService.isEmpty()) return
-        val waiting = waitingForService.toList()
-        waitingForService.clear()
-        waiting.forEach { json ->
-            sendCommand(
-                target,
-                PlaybackBridge.CMD_OBEY_PAGE,
-                Bundle().apply { putString(PlaybackBridge.KEY_COMMAND_JSON, json) },
-            )
+        if (waitingForService.isNotEmpty()) {
+            val waiting = waitingForService.toList()
+            waitingForService.clear()
+            waiting.forEach { json ->
+                sendCommand(
+                    target,
+                    PlaybackBridge.CMD_OBEY_PAGE,
+                    Bundle().apply { putString(PlaybackBridge.KEY_COMMAND_JSON, json) },
+                )
+            }
+        }
+        if (waitingSaveQueue.isNotEmpty()) {
+            val saves = waitingSaveQueue.toList()
+            waitingSaveQueue.clear()
+            saves.forEach { (requestId, name) -> sendSaveQueue(target, requestId, name) }
+        }
+    }
+
+    private fun sendSaveQueue(target: MediaController, requestId: String, name: String) {
+        sendCommand(
+            target,
+            PlaybackBridge.CMD_SAVE_QUEUE,
+            Bundle().apply {
+                putString(PlaybackBridge.KEY_REQUEST_ID, requestId)
+                putString(PlaybackBridge.KEY_NAME, name)
+            },
+        )
+    }
+
+    private fun fallbackBack() {
+        if (immersiveFullscreen) {
+            setFullscreen(false)
+        } else if (!webDestroyed && ::web.isInitialized && web.canGoBack()) {
+            web.goBack()
+        } else {
+            moveTaskToBack(true)
+        }
+    }
+
+    private fun setFullscreen(on: Boolean?) {
+        val next = on ?: !immersiveFullscreen
+        immersiveFullscreen = next
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        if (next) {
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+        findViewById<View>(R.id.main_root)?.let(ViewCompat::requestApplyInsets)
+        if (!webDestroyed && ::web.isInitialized) {
+            web.evaluateJavascript(Bridge.fullscreenState(next), null)
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && immersiveFullscreen) {
+            val controller = WindowCompat.getInsetsController(window, window.decorView)
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.systemBars())
         }
     }
 
@@ -763,6 +835,7 @@ class PlayerActivity : AppCompatActivity() {
                             lastNotification = null
                         }
                         if (settings.notifications) startNotifications()
+                        nameThisDevice()
                         listenToPage()
                         Toast.makeText(this@PlayerActivity, R.string.connected, Toast.LENGTH_SHORT).show()
                         view.loadUrl(server)
@@ -897,6 +970,33 @@ class PlayerActivity : AppCompatActivity() {
             watchSpectrum()
             return
         }
+        if (item.optString("do") == "equalizer") {
+            val state = Equalizer.decodeObject(item) ?: return
+            Settings(this).equalizer = state
+            AppBridgeProvider.applyEqualizer(this)
+            return
+        }
+        if (item.optString("do") == "fullscreen") {
+            val on = if (item.has("on") && !item.isNull("on") && item.opt("on") is Boolean) {
+                item.optBoolean("on")
+            } else {
+                null
+            }
+            setFullscreen(on)
+            return
+        }
+        if (item.optString("do") == "savequeue") {
+            val requestId = item.optString("id").takeIf { it.isNotEmpty() } ?: return
+            val name = item.optString("name")
+            val active = connectedController?.takeIf { it.isConnected }
+            if (active != null) {
+                sendSaveQueue(active, requestId, name)
+            } else {
+                waitingSaveQueue.add(requestId to name)
+                connectToService()
+            }
+            return
+        }
         Remote.command(item) ?: return
         val active = connectedController?.takeIf { it.isConnected }
         if (active != null) {
@@ -917,7 +1017,12 @@ class PlayerActivity : AppCompatActivity() {
         if (webDestroyed || !::web.isInitialized) return
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
         val origin = Server.origin(server) ?: return
-        val script = Remote.pageScript(Settings(this).deviceId, Remote.deviceName(Build.MODEL))
+        val settings = Settings(this)
+        val script = Remote.pageScript(
+            settings.deviceId,
+            Remote.deviceName(Build.MODEL),
+            nativeReady = settings.token != null,
+        )
         deviceScript = WebViewCompat.addDocumentStartJavaScript(web, script, setOf(origin))
     }
 
@@ -949,6 +1054,7 @@ class PlayerActivity : AppCompatActivity() {
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
         waitingForService.clear()
+        waitingSaveQueue.clear()
         pendingTakeOver = null
         if (!nativePlaying && ::server.isInitialized) {
             AppBridgeProvider.clearPageIfIdle(this, server)

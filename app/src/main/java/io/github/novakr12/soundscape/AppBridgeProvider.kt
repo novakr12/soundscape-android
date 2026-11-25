@@ -178,6 +178,15 @@ class AppBridgeProvider : ContentProvider() {
                 }
                 Bundle()
             }
+            METHOD_PLAYBACK_APPLY_EQUALIZER -> {
+                main.post { Playback.service?.applyEqualizer() }
+                Bundle()
+            }
+            METHOD_PLAYBACK_CLEAR_SAVED_QUEUE -> {
+                QueueOps.clearFile(app.filesDir)
+                main.post { Playback.service?.clearSavedQueue() }
+                Bundle()
+            }
 
             else -> null
         }
@@ -250,6 +259,8 @@ class AppBridgeProvider : ContentProvider() {
         const val METHOD_PLAYBACK_CLEAR_LIBRARY = "playback.clear_library"
         const val METHOD_PLAYBACK_REFRESH_DISCORD = "playback.refresh_discord"
         const val METHOD_PLAYBACK_CLEAR_PAGE_IF_IDLE = "playback.clear_page_if_idle"
+        const val METHOD_PLAYBACK_APPLY_EQUALIZER = "playback.apply_equalizer"
+        const val METHOD_PLAYBACK_CLEAR_SAVED_QUEUE = "playback.clear_saved_queue"
 
         const val KEY_VALUE = "value"
         const val KEY_DEFAULT = "default"
@@ -302,6 +313,14 @@ class AppBridgeProvider : ContentProvider() {
 
         fun clearPageIfIdle(context: Context, server: String) {
             call(context, METHOD_PLAYBACK_CLEAR_PAGE_IF_IDLE, extras = Bundle().apply { putString(KEY_SERVER, server) })
+        }
+
+        fun applyEqualizer(context: Context) {
+            call(context, METHOD_PLAYBACK_APPLY_EQUALIZER)
+        }
+
+        fun clearSavedQueue(context: Context) {
+            call(context, METHOD_PLAYBACK_CLEAR_SAVED_QUEUE)
         }
     }
 }

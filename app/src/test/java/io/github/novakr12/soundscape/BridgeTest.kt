@@ -196,6 +196,29 @@ class BridgeTest {
         assertEquals(1000L, Bridge.readMoment(1000, 990))
     }
 
+    @Test
+    fun scalesVolumeCubicallyAndBuildsControlScripts() {
+        assertEquals(0.0, Bridge.volumeGain(0.0), 0.0)
+        assertEquals(1.0, Bridge.volumeGain(1.0), 0.0)
+        assertEquals(0.125, Bridge.volumeGain(0.5), 1e-12)
+        assertEquals(0.512, Bridge.volumeGain(0.8), 1e-12)
+        assertEquals(0.0, Bridge.volumeGain(-0.2), 0.0)
+        assertEquals(1.0, Bridge.volumeGain(1.5), 0.0)
+        assertEquals(0.0, Bridge.volumeGain(Double.NaN), 0.0)
+
+        val savedScript = Bridge.queueSaved("""{"id":"q1","ok":true,"name":"</script>"}""")
+        assertTrue(savedScript.contains("soundscape-queue-saved"))
+        assertFalse(savedScript.contains("</script>"))
+        val quoted = savedScript.substringAfter("JSON.parse(").substringBefore(") })")
+        val parsed = org.json.JSONObject(org.json.JSONObject("{\"v\":$quoted}").getString("v"))
+        assertEquals("q1", parsed.getString("id"))
+        assertTrue(parsed.getBoolean("ok"))
+
+        assertTrue(Bridge.fullscreenState(true).contains("soundscape-fullscreen"))
+        assertTrue(Bridge.fullscreenState(true).contains("detail: true"))
+        assertTrue(Bridge.fullscreenState(false).contains("detail: false"))
+    }
+
     private fun parseQuotedJson(script: String): org.json.JSONObject {
         val quoted = script.substringAfter("JSON.parse(").substringBefore("))")
         return org.json.JSONObject(org.json.JSONObject("{\"v\":$quoted}").getString("v"))

@@ -54,6 +54,7 @@ class PlaybackService : MediaLibraryService() {
     private val main = Handler(Looper.getMainLooper())
     private val reporter = Pools.serial("soundscape-report")
     private var discord: DiscordLink? = null
+    private val equalizer = EqualizerAudioProcessor()
     private val spectrum = Spectrum()
     private var spectrumSent: ByteArray? = null
     private val showSpectrum = object : Runnable {
@@ -92,6 +93,7 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
+        equalizer.update(Settings(this).equalizer)
         pagePlayer = PagePlayer(
             Looper.getMainLooper(),
             send = ::sendRunInPage,
@@ -153,6 +155,7 @@ class PlaybackService : MediaLibraryService() {
                 }
             }
             PlaybackBridge.ACTION_TELL_PAGE -> {
+                maybeRestoreQueue()
                 val report = currentReportJson()
                 tellPage()
                 SessionResult(
@@ -193,6 +196,12 @@ class PlaybackService : MediaLibraryService() {
             }
             PlaybackBridge.ACTION_WATCH_SPECTRUM -> {
                 watchSpectrum(args.getBoolean(PlaybackBridge.KEY_ON))
+                SessionResult(SessionResult.RESULT_SUCCESS)
+            }
+            PlaybackBridge.ACTION_SAVE_QUEUE -> {
+                val id = args.getString(PlaybackBridge.KEY_REQUEST_ID) ?: ""
+                val name = args.getString(PlaybackBridge.KEY_NAME) ?: ""
+                saveQueueAsPlaylist(id, name)
                 SessionResult(SessionResult.RESULT_SUCCESS)
             }
             else -> return null
@@ -290,6 +299,86 @@ class PlaybackService : MediaLibraryService() {
         if (::library.isInitialized) library.clear()
     }
 
+    fun applyEqualizer() {
+        equalizer.update(Settings(this).equalizer)
+    }
+
+    fun clearSavedQueue() {
+        QueueOps.clearFile(filesDir)
+    }
+
+    private fun maybeRestoreQueue() {
+        if (destroyed || native != null) return
+        val settings = Settings(this)
+        val token = settings.token?.takeIf { it.isNotEmpty() } ?: return
+        val server = settings.server?.takeIf { it.isNotEmpty() } ?: return
+        val saved = QueueOps.loadFile(filesDir, server) ?: return
+        settings.shuffle = saved.shuffle
+        val volume = settings.volume ?: DEFAULT_VOLUME
+        start(
+            state = PageState(
+                tracks = saved.tracks,
+                position = saved.position,
+                time = saved.time,
+                duration = null,
+                playing = false,
+                volume = volume,
+                repeat = saved.repeat,
+            ),
+            server = server,
+            token = token,
+            fromPage = false,
+            catchUp = false,
+            playWhenReady = false,
+            restored = true,
+            savedUnshuffled = saved.unshuffled,
+        )
+    }
+
+    private fun saveQueueAsPlaylist(id: String, name: String) {
+        if (destroyed || id.isEmpty()) return
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) {
+            sendRunInPage(Bridge.queueSaved(QueueOps.playlistErrorDetail(id, "Give the playlist a name.")))
+            return
+        }
+        val running = native
+        val queueTracks = running?.tracks?.toList().orEmpty()
+        if (queueTracks.isEmpty()) {
+            sendRunInPage(Bridge.queueSaved(QueueOps.playlistErrorDetail(id, "The queue is empty.")))
+            return
+        }
+        val settings = Settings(this)
+        val targetServer = running?.server?.takeIf { it != OFFLINE } ?: settings.server?.takeIf { it.isNotEmpty() }
+        val targetToken = running?.token?.takeIf { it.isNotEmpty() } ?: settings.token
+        if (targetServer == null || targetToken.isNullOrEmpty()) {
+            sendRunInPage(Bridge.queueSaved(QueueOps.playlistErrorDetail(id, "Log in to save playlists.")))
+            return
+        }
+        val body = QueueOps.playlistRequestBody(trimmed, queueTracks)
+        try {
+            Pools.io.execute {
+                val answer = runCatching {
+                    Net.postJson(
+                        address = "$targetServer/api/music/queue-playlist",
+                        body = body,
+                        token = targetToken,
+                        connectTimeoutMs = 10_000,
+                        readTimeoutMs = 30_000,
+                        readResponse = true,
+                        readError = true,
+                    )
+                }.getOrNull()
+                val detail = QueueOps.playlistResultDetail(id, trimmed, answer)
+                main.post {
+                    if (!destroyed) sendRunInPage(Bridge.queueSaved(detail))
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            sendRunInPage(Bridge.queueSaved(QueueOps.playlistErrorDetail(id, "Could not save playlist.")))
+        }
+    }
+
     private fun updateDiscord(force: Boolean = false) {
         if (destroyed) return
         val settings = Settings(this)
@@ -344,7 +433,7 @@ class PlaybackService : MediaLibraryService() {
         }
         val settings = Settings(this)
         val server = settings.server ?: return
-        val volume = pagePlayer.shown?.volume ?: DEFAULT_VOLUME
+        val volume = settings.volume ?: pagePlayer.shown?.volume ?: DEFAULT_VOLUME
         val state = PageState(take.tracks, take.position, take.time, null, take.playing, volume, "off")
         start(state, server, settings.token.orEmpty(), fromPage = false, playWhenReady = take.playing)
         tellPage()
@@ -355,7 +444,13 @@ class PlaybackService : MediaLibraryService() {
         return native?.report() ?: Remote.report(
             Settings(this).deviceId,
             Remote.deviceName(Build.MODEL),
-            RemoteSnapshot(null, false, 0.0, null, pagePlayer.shown?.volume ?: DEFAULT_VOLUME),
+            RemoteSnapshot(
+                null,
+                false,
+                0.0,
+                null,
+                Settings(this).volume ?: pagePlayer.shown?.volume ?: DEFAULT_VOLUME,
+            ),
         )
     }
 
@@ -386,7 +481,7 @@ class PlaybackService : MediaLibraryService() {
         val settings = Settings(this)
         val server = settings.server ?: OFFLINE
         val token = settings.token.orEmpty()
-        val volume = pagePlayer.shown?.volume ?: DEFAULT_VOLUME
+        val volume = settings.volume ?: pagePlayer.shown?.volume ?: DEFAULT_VOLUME
         start(PageState(tracks, at, time, null, true, volume, "off"), server, token, fromPage = true).replaced = true
     }
 
@@ -397,7 +492,12 @@ class PlaybackService : MediaLibraryService() {
         fromPage: Boolean,
         catchUp: Boolean = false,
         playWhenReady: Boolean = true,
+        restored: Boolean = false,
+        savedUnshuffled: List<BridgeTrack>? = null,
     ): Native {
+        val sink = DefaultAudioSink.Builder(this)
+            .setAudioProcessors(arrayOf(equalizer))
+            .build()
         val renderersFactory = RenderersFactory { eventHandler, _, audioListener, _, _ ->
             arrayOf(
                 object : MediaCodecAudioRenderer(
@@ -406,7 +506,7 @@ class PlaybackService : MediaLibraryService() {
                     true,
                     eventHandler,
                     audioListener,
-                    SpectrumSink(DefaultAudioSink.Builder(this).build(), spectrum),
+                    SpectrumSink(sink, spectrum),
                 ) {
                     override fun getDurationToProgressUs(
                         positionUs: Long,
@@ -438,12 +538,17 @@ class PlaybackService : MediaLibraryService() {
         player.setMediaItems(itemsFor(server, state.tracks), state.position, (state.time * 1000).toLong())
         player.repeatMode = Bridge.repeatMode(state.repeat)
         val running = Native(player, state, server, token, fromPage)
+        if (restored) {
+            running.unshuffled = savedUnshuffled
+        }
         native = running
         player.addListener(running)
         player.volume = if (catchUp) 0f else running.volumeAt(state.position)
         if (!fromPage) session.player = player
-        player.prepare()
-        if (Settings(this).shuffle) running.setShuffle(true)
+        if (!restored) {
+            player.prepare()
+            if (Settings(this).shuffle) running.setShuffle(true)
+        }
         running.syncing = catchUp
         running.since = SystemClock.elapsedRealtime()
         player.playWhenReady = playWhenReady
@@ -590,15 +695,67 @@ class PlaybackService : MediaLibraryService() {
         private var refilledAfter: String? = null
         private var refillingFor: String? = null
         private var refillRetryAt = 0L
-        private var unshuffled: List<BridgeTrack>? = null
+        var unshuffled: List<BridgeTrack>? = null
         private var mutatingTimeline = false
         private var consecutiveErrors = 0
+        private val sleep = SleepClock()
+        private var restoreVolumeOnResume = false
+        private var lastQueueSaveAt = 0L
+        private val sleepWake = object : Runnable {
+            override fun run() {
+                if (this@PlaybackService.native !== this@Native) return
+                val res = sleep.step(SystemClock.elapsedRealtime(), player.isPlaying)
+                if (res.fading) {
+                    main.removeCallbacks(sleepFadeTick)
+                    main.post(sleepFadeTick)
+                }
+                if (res.changed) changed()
+            }
+        }
+        private val sleepFadeTick = object : Runnable {
+            override fun run() {
+                if (this@PlaybackService.native !== this@Native) return
+                val res = sleep.step(SystemClock.elapsedRealtime(), player.isPlaying)
+                player.volume = volumeAt(player.currentMediaItemIndex)
+                if (res.shouldPause) {
+                    player.volume = 0f
+                    player.pause()
+                    sleep.cancelFade()
+                    restoreVolumeOnResume = true
+                    changed()
+                    main.removeCallbacks(restoreVolumeLater)
+                    main.postDelayed(restoreVolumeLater, RESTORE_VOLUME_DELAY_MS)
+                    return
+                }
+                if (res.fading) {
+                    main.postDelayed(this, SleepClock.FADE_STEP_MS)
+                }
+            }
+        }
+        private val restoreVolumeLater = Runnable {
+            if (this@PlaybackService.native !== this@Native) return@Runnable
+            if (restoreVolumeOnResume && !player.isPlaying) {
+                restoreVolumeOnResume = false
+                player.volume = volumeAt(player.currentMediaItemIndex)
+            }
+        }
+        private val saveVolume = Runnable {
+            if (this@PlaybackService.native !== this@Native) return@Runnable
+            Settings(this@PlaybackService).volume = volume
+        }
+        private val saveQueueLater = Runnable {
+            if (this@PlaybackService.native !== this@Native) return@Runnable
+            flushQueueSave(async = true)
+        }
         private val tick = object : Runnable {
             override fun run() {
                 if (this@PlaybackService.native !== this@Native) return
                 follow()
                 keepGoing()
                 updateDiscord()
+                if (SystemClock.elapsedRealtime() - lastQueueSaveAt >= SAVE_QUEUE_EVERY_MS) {
+                    flushQueueSave(async = true)
+                }
                 if (player.isPlaying) {
                     main.postDelayed(this, TICK_MS)
                 }
@@ -606,6 +763,7 @@ class PlaybackService : MediaLibraryService() {
         }
 
         private fun keepGoing() {
+            if (sleep.isAfterSong) return
             val index = player.currentMediaItemIndex
             if (index !in tracks.indices) return
             val left = player.mediaItemCount - index - 1
@@ -660,6 +818,7 @@ class PlaybackService : MediaLibraryService() {
                 mutatingTimeline = false
             }
             pruneHistory()
+            scheduleSaveQueue()
         }
 
         private fun pruneHistory() {
@@ -765,7 +924,25 @@ class PlaybackService : MediaLibraryService() {
             main.post(tick)
         }
 
-        fun volumeAt(index: Int) = (volume * (tracks.getOrNull(index)?.level ?: 1.0)).toFloat()
+        fun volumeAt(index: Int) =
+            (Bridge.volumeGain(volume) * (tracks.getOrNull(index)?.level ?: 1.0) * sleep.fadeGain)
+                .toFloat()
+                .coerceIn(0f, 1f)
+
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            if (playWhenReady && player.playbackState == Player.STATE_IDLE) {
+                player.prepare()
+            }
+            if (playWhenReady && restoreVolumeOnResume) {
+                main.removeCallbacks(restoreVolumeLater)
+                restoreVolumeOnResume = false
+                player.volume = volumeAt(player.currentMediaItemIndex)
+            }
+            if (!playWhenReady && sleep.cancelFade()) {
+                main.removeCallbacks(sleepFadeTick)
+                player.volume = volumeAt(player.currentMediaItemIndex)
+            }
+        }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) consecutiveErrors = 0
@@ -777,6 +954,7 @@ class PlaybackService : MediaLibraryService() {
                 } else {
                     before = null
                     updateDiscord()
+                    scheduleSaveQueue()
                 }
                 return
             }
@@ -797,8 +975,19 @@ class PlaybackService : MediaLibraryService() {
             heard = 0.0
             before = null
             counted = false
+            if ((reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO ||
+                    reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) &&
+                sleep.onSongFinished()
+            ) {
+                player.pause()
+                player.seekTo(player.currentMediaItemIndex, 0L)
+                changed()
+                scheduleSaveQueue()
+                return
+            }
             if (live) announce()
             changed()
+            scheduleSaveQueue()
         }
 
         override fun onPositionDiscontinuity(
@@ -810,11 +999,15 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_ENDED && sleep.onSongFinished()) {
+                player.pause()
+            }
             changed()
         }
 
         override fun onRepeatModeChanged(repeatMode: Int) {
             changed()
+            scheduleSaveQueue()
         }
 
         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
@@ -829,9 +1022,14 @@ class PlaybackService : MediaLibraryService() {
             tracks = known
             replaced = true
             announced = -1
+            scheduleSaveQueue()
         }
 
         fun replace(next: List<BridgeTrack>, position: Int, time: Double, playing: Boolean) {
+            main.removeCallbacks(sleepFadeTick)
+            main.removeCallbacks(restoreVolumeLater)
+            restoreVolumeOnResume = false
+            sleep.cancelFade()
             tracks = next
             replaced = true
             announced = -1
@@ -850,6 +1048,7 @@ class PlaybackService : MediaLibraryService() {
             player.prepare()
             player.playWhenReady = playing
             if (Settings(this@PlaybackService).shuffle) setShuffle(true)
+            scheduleSaveQueue()
         }
 
         fun setShuffle(on: Boolean) {
@@ -882,6 +1081,7 @@ class PlaybackService : MediaLibraryService() {
             tracks = order
             replaced = true
             changed()
+            scheduleSaveQueue()
         }
 
         override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
@@ -926,7 +1126,7 @@ class PlaybackService : MediaLibraryService() {
         private fun connect() {
             if (link != null || token.isEmpty() || server == OFFLINE) return
             val settings = Settings(this@PlaybackService)
-            link = RemoteLink(server, token, settings.deviceId, Remote.deviceName(Build.MODEL), ::snapshot, ::obey)
+            link = RemoteLink(server, token, settings.deviceId, Remote.deviceName(Build.MODEL), ::snapshot, ::obeyHere)
                 .also { it.start() }
         }
 
@@ -956,35 +1156,157 @@ class PlaybackService : MediaLibraryService() {
                 repeat,
                 upNext,
                 unshuffled != null,
+                sleep.snapshot(SystemClock.elapsedRealtime()),
             )
+        }
+
+        private fun currentSavedQueue(): SavedQueue? {
+            if (server == OFFLINE || tracks.isEmpty()) return null
+            val index = player.currentMediaItemIndex
+            if (index !in tracks.indices) return null
+            val repeat = when (player.repeatMode) {
+                Player.REPEAT_MODE_ALL -> "all"
+                Player.REPEAT_MODE_ONE -> "one"
+                else -> "off"
+            }
+            return SavedQueue(
+                server = server,
+                tracks = tracks.toList(),
+                position = index,
+                time = player.currentPosition.coerceAtLeast(0L) / 1000.0,
+                repeat = repeat,
+                shuffle = unshuffled != null,
+                unshuffled = unshuffled?.toList(),
+            )
+        }
+
+        private fun scheduleSaveQueue(delayMs: Long = SAVE_QUEUE_DEBOUNCE_MS) {
+            if (server == OFFLINE || tracks.isEmpty()) return
+            main.removeCallbacks(saveQueueLater)
+            main.postDelayed(saveQueueLater, delayMs)
+        }
+
+        private fun flushQueueSave(async: Boolean) {
+            lastQueueSaveAt = SystemClock.elapsedRealtime()
+            val snap = currentSavedQueue() ?: return
+            if (async) {
+                onReporter { QueueOps.saveFile(filesDir, snap) }
+            } else {
+                QueueOps.saveFile(filesDir, snap)
+            }
         }
 
         private fun obey(command: RemoteCommand) {
             when (command) {
-                RemoteCommand.Play -> player.play()
-                RemoteCommand.Pause -> player.pause()
-                RemoteCommand.Toggle -> if (player.playWhenReady) player.pause() else player.play()
-                RemoteCommand.Next -> if (player.hasNextMediaItem()) player.seekToNextMediaItem()
-                RemoteCommand.Previous ->
+                RemoteCommand.Play -> {
+                    main.removeCallbacks(restoreVolumeLater)
+                    restoreVolumeOnResume = false
+                    if (sleep.cancelFade()) main.removeCallbacks(sleepFadeTick)
+                    player.volume = volumeAt(player.currentMediaItemIndex)
+                    if (player.playbackState == Player.STATE_IDLE) player.prepare()
+                    player.play()
+                }
+                RemoteCommand.Pause -> {
+                    if (sleep.cancelFade()) {
+                        main.removeCallbacks(sleepFadeTick)
+                        player.volume = volumeAt(player.currentMediaItemIndex)
+                    }
+                    player.pause()
+                }
+                RemoteCommand.Toggle -> if (player.playWhenReady) {
+                    if (sleep.cancelFade()) {
+                        main.removeCallbacks(sleepFadeTick)
+                        player.volume = volumeAt(player.currentMediaItemIndex)
+                    }
+                    player.pause()
+                } else {
+                    main.removeCallbacks(restoreVolumeLater)
+                    restoreVolumeOnResume = false
+                    if (sleep.cancelFade()) main.removeCallbacks(sleepFadeTick)
+                    player.volume = volumeAt(player.currentMediaItemIndex)
+                    if (player.playbackState == Player.STATE_IDLE) player.prepare()
+                    player.play()
+                }
+                RemoteCommand.Next -> if (player.hasNextMediaItem()) {
+                    if (player.playbackState == Player.STATE_IDLE) player.prepare()
+                    player.seekToNextMediaItem()
+                }
+                RemoteCommand.Previous -> {
+                    if (player.playbackState == Player.STATE_IDLE) player.prepare()
                     if (player.currentPosition / 1000.0 > Remote.RESTART_AFTER_SECONDS || !player.hasPreviousMediaItem()) {
                         player.seekTo(0)
                     } else {
                         player.seekToPreviousMediaItem()
                     }
-                is RemoteCommand.Seek -> player.seekTo((command.seconds * 1000).toLong())
+                }
+                is RemoteCommand.Seek -> {
+                    if (player.playbackState == Player.STATE_IDLE) player.prepare()
+                    player.seekTo((command.seconds * 1000).toLong())
+                    scheduleSaveQueue()
+                }
                 is RemoteCommand.Volume -> {
                     volume = command.volume
+                    main.removeCallbacks(restoreVolumeLater)
+                    restoreVolumeOnResume = false
+                    if (sleep.cancelFade()) main.removeCallbacks(sleepFadeTick)
                     player.volume = volumeAt(player.currentMediaItemIndex)
+                    main.removeCallbacks(saveVolume)
+                    main.postDelayed(saveVolume, SAVE_VOLUME_DEBOUNCE_MS)
                 }
                 is RemoteCommand.Take -> replace(command.tracks, command.position, command.time, command.playing)
-                is RemoteCommand.Repeat -> player.repeatMode = Bridge.repeatMode(command.mode)
+                is RemoteCommand.Repeat -> {
+                    player.repeatMode = Bridge.repeatMode(command.mode)
+                    scheduleSaveQueue()
+                }
                 is RemoteCommand.Shuffle -> {
                     Settings(this@PlaybackService).shuffle = command.on
                     setShuffle(command.on)
                 }
                 is RemoteCommand.Jump -> {
                     val target = player.currentMediaItemIndex + command.ahead
-                    if (target < player.mediaItemCount) player.seekTo(target, 0)
+                    if (target < player.mediaItemCount) {
+                        if (player.playbackState == Player.STATE_IDLE) player.prepare()
+                        player.seekTo(target, 0)
+                    }
+                }
+                is RemoteCommand.Remove -> {
+                    val removed = QueueOps.removeUpcoming(tracks, player.currentMediaItemIndex, command.ahead, unshuffled)
+                    if (removed != null) {
+                        tracks = removed.tracks
+                        unshuffled = removed.unshuffled
+                        replaced = true
+                        mutatingTimeline = true
+                        try {
+                            player.removeMediaItem(removed.targetIndex)
+                        } finally {
+                            mutatingTimeline = false
+                        }
+                        scheduleSaveQueue()
+                    }
+                }
+                is RemoteCommand.Move -> {
+                    val moved = QueueOps.moveUpcoming(tracks, player.currentMediaItemIndex, command.from, command.to)
+                    if (moved != null) {
+                        tracks = moved.tracks
+                        replaced = true
+                        mutatingTimeline = true
+                        try {
+                            player.moveMediaItem(moved.fromIndex, moved.toIndex)
+                        } finally {
+                            mutatingTimeline = false
+                        }
+                        scheduleSaveQueue()
+                    }
+                }
+                is RemoteCommand.Sleep -> {
+                    main.removeCallbacks(sleepWake)
+                    main.removeCallbacks(sleepFadeTick)
+                    main.removeCallbacks(restoreVolumeLater)
+                    restoreVolumeOnResume = false
+                    val now = SystemClock.elapsedRealtime()
+                    sleep.set(command.mode, now)
+                    player.volume = volumeAt(player.currentMediaItemIndex)
+                    sleep.remainingMs(now)?.let { delay -> main.postDelayed(sleepWake, delay) }
                 }
                 is RemoteCommand.Enqueue -> {
                     val count = player.mediaItemCount
@@ -998,6 +1320,7 @@ class PlaybackService : MediaLibraryService() {
                     } finally {
                         mutatingTimeline = false
                     }
+                    scheduleSaveQueue()
                 }
                 is RemoteCommand.Send -> {
                     val body = Remote.send(
@@ -1053,11 +1376,17 @@ class PlaybackService : MediaLibraryService() {
         }
 
         fun release(notify: Boolean = true) {
+            flushQueueSave(async = notify)
             link?.stop()
             link = null
             if (live) sendRunInPage(Remote.holdScript(false))
             main.removeCallbacks(tick)
             main.removeCallbacks(sync)
+            main.removeCallbacks(sleepWake)
+            main.removeCallbacks(sleepFadeTick)
+            main.removeCallbacks(restoreVolumeLater)
+            main.removeCallbacks(saveVolume)
+            main.removeCallbacks(saveQueueLater)
             player.removeListener(this)
             player.release()
             if (notify && !destroyed) {
@@ -1073,6 +1402,10 @@ class PlaybackService : MediaLibraryService() {
     private companion object {
         const val TICK_MS = 1000L
         const val SPECTRUM_TICK_MS = 16L
+        const val SAVE_VOLUME_DEBOUNCE_MS = 300L
+        const val SAVE_QUEUE_DEBOUNCE_MS = 2_000L
+        const val SAVE_QUEUE_EVERY_MS = 15_000L
+        const val RESTORE_VOLUME_DELAY_MS = 150L
         const val TAKE_OVER_WITHIN_MS = 12_000L
         const val SYNC_WITHIN_MS = 6_000L
         const val SYNC_STEP_MS = 50L
